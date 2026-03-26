@@ -78,40 +78,58 @@ class AlignmentBuilder:
         out = [points[0]]
         for i in range(1, len(points) - 1):
             p_prev, p, p_next = points[i - 1], points[i], points[i + 1]
-            v1 = normalize(p[0] - p_prev[0], p[1] - p_prev[1])
-            v2 = normalize(p_next[0] - p[0], p_next[1] - p[1])
-            dot = max(-1.0, min(1.0, v1[0] * v2[0] + v1[1] * v2[1]))
-            angle = math.acos(dot)
-            if angle < math.radians(3):
+            seg_in = math.dist(p_prev, p)
+            seg_out = math.dist(p, p_next)
+            if seg_in <= 1e-6 or seg_out <= 1e-6:
                 out.append(p)
                 continue
-            t = min(min_radius * math.tan(angle / 2), math.dist(p_prev, p) * 0.45, math.dist(p, p_next) * 0.45)
-            if t <= 0.1:
+
+            v_in = normalize(p[0] - p_prev[0], p[1] - p_prev[1])
+            v_out = normalize(p_next[0] - p[0], p_next[1] - p[1])
+            dot = max(-1.0, min(1.0, v_in[0] * v_out[0] + v_in[1] * v_out[1]))
+            deflection = math.acos(dot)
+
+            if deflection < math.radians(2.0) or deflection > math.radians(175.0):
                 out.append(p)
                 continue
-            p_in = (p[0] - v1[0] * t, p[1] - v1[1] * t)
-            p_out = (p[0] + v2[0] * t, p[1] + v2[1] * t)
-            bis = normalize(v1[0] + v2[0], v1[1] + v2[1])
-            sin_half = math.sin(angle / 2)
-            if abs(sin_half) < 1e-6:
-                out.extend([p_in, p_out])
+
+            half = deflection / 2.0
+            tan_half = math.tan(half)
+            if abs(tan_half) < 1e-9:
+                out.append(p)
                 continue
-            r_eff = t / math.tan(angle / 2)
-            center_dist = r_eff / sin_half
-            center = (p[0] - bis[0] * center_dist, p[1] - bis[1] * center_dist)
+
+            trim = min(max(min_radius, 1e-3) * tan_half, seg_in * 0.45, seg_out * 0.45)
+            if trim <= 1e-4:
+                out.append(p)
+                continue
+
+            radius = trim / tan_half
+            p_in = (p[0] - v_in[0] * trim, p[1] - v_in[1] * trim)
+            p_out = (p[0] + v_out[0] * trim, p[1] + v_out[1] * trim)
+
+            turn = v_in[0] * v_out[1] - v_in[1] * v_out[0]
+            if abs(turn) < 1e-9:
+                out.append(p)
+                continue
+            left_turn = turn > 0
+            n_in = (-v_in[1], v_in[0]) if left_turn else (v_in[1], -v_in[0])
+            center = (p_in[0] + n_in[0] * radius, p_in[1] + n_in[1] * radius)
+
             a0 = math.atan2(p_in[1] - center[1], p_in[0] - center[0])
             a1 = math.atan2(p_out[1] - center[1], p_out[0] - center[0])
-            cross = v1[0] * v2[1] - v1[1] * v2[0]
-            if cross > 0 and a1 < a0:
+            if left_turn and a1 < a0:
                 a1 += 2 * math.pi
-            if cross < 0 and a1 > a0:
+            if (not left_turn) and a1 > a0:
                 a1 -= 2 * math.pi
-            segments = max(4, int(abs(a1 - a0) * r_eff / 3.0))
+
+            arc_len = abs(a1 - a0) * radius
+            segments = max(4, int(arc_len / 3.0))
             out.append(p_in)
             for j in range(1, segments):
                 tt = j / segments
                 aa = a0 + (a1 - a0) * tt
-                out.append((center[0] + r_eff * math.cos(aa), center[1] + r_eff * math.sin(aa)))
+                out.append((center[0] + radius * math.cos(aa), center[1] + radius * math.sin(aa)))
             out.append(p_out)
         out.append(points[-1])
         return out

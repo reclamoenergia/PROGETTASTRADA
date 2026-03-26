@@ -96,45 +96,60 @@ class RoadModelBuilder:
         dir_out = -1.0 if left else 1.0
         dzdx = (1.0 if is_cut else -1.0) * dir_out / hv
 
-        indices = range(edge_i - 1, -1, -1) if left else range(edge_i + 1, len(offsets))
-        prev_x, prev_diff = edge_x, edge_z - terrain_edge
-        hit_i = None
+        outward = list(range(edge_i - 1, -1, -1)) if left else list(range(edge_i + 1, len(offsets)))
         hit_x = edge_x
-        hit_z = edge_z
+        hit_found = False
+        last_valid_x = edge_x
+        last_valid_diff = edge_z - terrain_edge
 
-        for i in indices:
-            x = offsets[i]
-            z_line = edge_z + dzdx * (x - edge_x)
+        for i in outward:
             terr = section.terrain_z[i]
             if not math.isfinite(terr):
                 continue
+            x = offsets[i]
+            z_line = edge_z + dzdx * (x - edge_x)
             diff = z_line - terr
-            if abs(diff) <= 1e-6 or (diff > 0) != (prev_diff > 0):
-                t = 0.0 if abs(x - prev_x) < 1e-9 else (0.0 - prev_diff) / (diff - prev_diff)
-                t = max(0.0, min(1.0, t))
-                hit_x = prev_x + (x - prev_x) * t
-                hit_z = edge_z + dzdx * (hit_x - edge_x)
-                hit_i = i
-                break
-            prev_x, prev_diff = x, diff
 
-        if hit_i is None:
+            if abs(diff) <= 1e-6:
+                hit_x = x
+                hit_found = True
+                break
+
+            if (diff > 0) != (last_valid_diff > 0):
+                den = (diff - last_valid_diff)
+                t = 0.0 if abs(den) < 1e-9 else (0.0 - last_valid_diff) / den
+                t = max(0.0, min(1.0, t))
+                hit_x = last_valid_x + (x - last_valid_x) * t
+                hit_found = True
+                break
+
+            last_valid_x = x
+            last_valid_diff = diff
+
+        if not hit_found:
             # fallback controllato: estensione limitata (non fino al bordo sezione)
             max_ext = 20.0
             outer_x = edge_x
-            for i in indices:
+            for i in outward:
                 x = offsets[i]
                 if abs(x - edge_x) <= max_ext + 1e-6:
-                    section.project_z[i] = edge_z + dzdx * (x - edge_x)
+                    terr = section.terrain_z[i]
+                    if math.isfinite(terr):
+                        section.project_z[i] = edge_z + dzdx * (x - edge_x)
                     outer_x = x
                 else:
                     section.project_z[i] = section.terrain_z[i]
-            return False, outer_x, f"Intercettazione terreno non trovata, fallback limitato a {max_ext:.1f} m."
+            slope_kind = "sterro" if is_cut else "riporto"
+            return False, outer_x, f"Scarpata {slope_kind} non risolta; fallback limitato a {max_ext:.1f} m."
 
-        for i in indices:
+        for i in outward:
             x = offsets[i]
+            terr = section.terrain_z[i]
+            if not math.isfinite(terr):
+                continue
             if (left and x >= hit_x) or ((not left) and x <= hit_x):
                 section.project_z[i] = edge_z + dzdx * (x - edge_x)
             else:
-                section.project_z[i] = section.terrain_z[i]
-        return True, hit_x, "Intercettazione terreno risolta."
+                section.project_z[i] = terr
+        slope_kind = "sterro" if is_cut else "riporto"
+        return True, hit_x, f"Intercettazione terreno risolta ({slope_kind})."
