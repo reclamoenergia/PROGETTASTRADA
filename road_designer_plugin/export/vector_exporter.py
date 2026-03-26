@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Sequence, Tuple
 
 from qgis.core import (
     QgsFeature,
@@ -65,7 +65,7 @@ class VectorExporter:
         layer.updateFields()
 
         feat = QgsFeature(layer.fields())
-        feat.setGeometry(QgsGeometry.fromPolylineXY([QgsPointXY(x, y) for x, y in alignment.points]))
+        feat.setGeometry(QgsGeometry.fromPolylineXY([self._as_qgspointxy(pt) for pt in alignment.points]))
         feat.setAttributes([1, alignment.length, len(alignment.points)])
         pr.addFeature(feat)
         layer.updateExtents()
@@ -172,6 +172,23 @@ class VectorExporter:
     def _point_from_offset(self, sec: SectionData, offset: float) -> QgsPointXY:
         return QgsPointXY(sec.axis_point[0] + sec.normal[0] * offset, sec.axis_point[1] + sec.normal[1] * offset)
 
+    def _as_qgspointxy(self, point: Sequence[float] | QgsPointXY) -> QgsPointXY:
+        if isinstance(point, QgsPointXY):
+            return point
+        if hasattr(point, "x") and hasattr(point, "y"):
+            return QgsPointXY(float(point.x()), float(point.y()))
+        if len(point) < 2:
+            raise ValueError("Punto non valido per esportazione asse.")
+        return QgsPointXY(float(point[0]), float(point[1]))
+
+    def _extract_writer_result(self, result_obj) -> tuple[int, str]:
+        if isinstance(result_obj, tuple):
+            if len(result_obj) >= 2:
+                return int(result_obj[0]), str(result_obj[1] or "")
+            if len(result_obj) == 1:
+                return int(result_obj[0]), ""
+        return int(result_obj), ""
+
     def _save_layer(self, layer: QgsVectorLayer, folder: str, base_name: str) -> str:
         out_dir = Path(folder)
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -179,22 +196,24 @@ class VectorExporter:
         options = QgsVectorFileWriter.SaveVectorOptions()
         options.driverName = "ESRI Shapefile"
         options.fileEncoding = "UTF-8"
-        result, error_message = QgsVectorFileWriter.writeAsVectorFormatV3(
+        write_result = QgsVectorFileWriter.writeAsVectorFormatV3(
             layer,
             str(path),
             QgsProject.instance().transformContext(),
             options,
         )
+        result, error_message = self._extract_writer_result(write_result)
         if result != QgsVectorFileWriter.NoError:
             gpkg_path = out_dir / f"{base_name}.gpkg"
             options.driverName = "GPKG"
             options.layerName = base_name
-            result, error_message = QgsVectorFileWriter.writeAsVectorFormatV3(
+            write_result = QgsVectorFileWriter.writeAsVectorFormatV3(
                 layer,
                 str(gpkg_path),
                 QgsProject.instance().transformContext(),
                 options,
             )
+            result, error_message = self._extract_writer_result(write_result)
             if result != QgsVectorFileWriter.NoError:
                 raise RuntimeError(f"Esportazione vettoriale fallita per '{base_name}': {error_message}")
             return str(gpkg_path)
