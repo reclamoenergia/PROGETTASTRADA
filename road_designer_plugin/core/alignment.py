@@ -47,12 +47,27 @@ class AlignmentBuilder:
         return Alignment(sampled, progressive)
 
     def _extract_axis_points(self, layer: QgsVectorLayer) -> List[Point2D]:
-        feat = next(layer.getFeatures(), None)
+        selected = list(layer.selectedFeatureIds())
+        if len(selected) == 1:
+            feat = next(layer.getFeatures(selected), None)
+        else:
+            feature_count = layer.featureCount()
+            if feature_count != 1:
+                raise ValueError(
+                    "Il layer asse deve contenere una sola feature "
+                    "(oppure selezionarne esattamente una)."
+                )
+            feat = next(layer.getFeatures(), None)
         if not feat:
             return []
         geom: QgsGeometry = feat.geometry()
+        if geom.isEmpty():
+            return []
         if geom.isMultipart():
-            line = geom.asMultiPolyline()[0]
+            parts = geom.asMultiPolyline()
+            if not parts:
+                return []
+            line = max(parts, key=len)
         else:
             line = geom.asPolyline()
         return [(p.x(), p.y()) for p in line]

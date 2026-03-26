@@ -32,6 +32,8 @@ class SectionData:
     terrain_z: List[float]
     project_z: List[float] = field(default_factory=list)
     road_core_z: List[float] = field(default_factory=list)
+    road_core_left_offset: Optional[float] = None
+    road_core_right_offset: Optional[float] = None
     cut_area: float = 0.0
     fill_area: float = 0.0
     width_info: Optional[WidthInfo] = None
