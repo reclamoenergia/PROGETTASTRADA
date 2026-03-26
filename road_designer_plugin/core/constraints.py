@@ -23,8 +23,12 @@ class ConstraintChecker:
         for s in sections:
             if not s.project_z:
                 continue
-            i0 = 0
-            i1 = len(s.offsets) - 1
+            left = s.road_core_left_offset if s.road_core_left_offset is not None else min(s.offsets)
+            right = s.road_core_right_offset if s.road_core_right_offset is not None else max(s.offsets)
+            i0 = min(range(len(s.offsets)), key=lambda i: abs(s.offsets[i] - left))
+            i1 = min(range(len(s.offsets)), key=lambda i: abs(s.offsets[i] - right))
+            if i0 == i1:
+                continue
             dz = abs(s.project_z[i1] - s.project_z[i0])
             dx = abs(s.offsets[i1] - s.offsets[i0])
             if dx <= 0:

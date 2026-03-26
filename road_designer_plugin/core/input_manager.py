@@ -36,6 +36,12 @@ class InputManager:
             return False, "Il layer DTM deve essere raster."
         if QgsWkbTypes.geometryType(axis.wkbType()) != QgsWkbTypes.LineGeometry:
             return False, "Il layer asse deve essere lineare."
+        if len(axis.selectedFeatureIds()) != 1 and axis.featureCount() != 1:
+            return (
+                False,
+                "Il layer asse deve contenere una sola feature "
+                "oppure una singola feature selezionata.",
+            )
         if QgsWkbTypes.geometryType(polygon.wkbType()) != QgsWkbTypes.PolygonGeometry:
             return False, "Il layer viabilità deve essere poligonale."
         if forced and QgsWkbTypes.geometryType(forced.wkbType()) != QgsWkbTypes.PointGeometry:

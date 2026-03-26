@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from typing import List
 
@@ -24,8 +25,10 @@ class DxfExporter:
             if layer not in doc.layers:
                 doc.layers.new(name=layer)
         y_shift = 0.0
-        spacing = 30.0
+        min_spacing = 12.0
         for s in sections:
+            if not s.offsets or not s.terrain_z or not s.project_z:
+                continue
             terr = [(x, z + y_shift) for x, z in zip(s.offsets, s.terrain_z)]
             proj = [(x, z + y_shift) for x, z in zip(s.offsets, s.project_z)]
             core = [(x, z + y_shift) for x, z in zip(s.offsets, s.road_core_z)]
@@ -33,13 +36,17 @@ class DxfExporter:
             msp.add_lwpolyline(core, dxfattribs={"layer": "SEZ_ROAD_CORE"})
             msp.add_lwpolyline(proj, dxfattribs={"layer": "SEZ_PROJECT"})
             msp.add_line((0, y_shift - 5), (0, y_shift + 5), dxfattribs={"layer": "SEZ_AXIS"})
+            axis_i = min(range(len(s.offsets)), key=lambda i: abs(s.offsets[i]))
+            axis_z = s.project_z[axis_i]
             txt = (
-                f"Prog {s.progressive:.2f} | Zproj {s.project_z[len(s.project_z)//2]:.2f} | "
+                f"Prog {s.progressive:.2f} | Zproj {axis_z:.2f} | "
                 f"Wmin {min_width:.2f} | Wreal {s.width_info.total_width if s.width_info else min_width:.2f} | "
                 f"Cut {s.cut_area:.2f} | Fill {s.fill_area:.2f}"
             )
             msp.add_text(txt, dxfattribs={"height": 1.5, "layer": "SEZ_TEXT"}).set_placement((0, y_shift + 8))
-            y_shift -= spacing
+            values = [z for z in s.terrain_z + s.project_z if math.isfinite(z)]
+            span = (max(values) - min(values)) if values else 0.0
+            y_shift -= max(min_spacing, span + 10.0)
         out = Path(path)
         out.parent.mkdir(parents=True, exist_ok=True)
         doc.saveas(str(out))

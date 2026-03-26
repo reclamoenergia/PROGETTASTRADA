@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import math
+import logging
 from typing import Dict, List, Optional
 
-from qgis.core import QgsVectorLayer
+from qgis.core import QgsGeometry, QgsPointXY, QgsVectorLayer
 
 from .models import ProfileData
 from ..utils.math_utils import clamp
 
 
 class VerticalProfileBuilder:
+    def __init__(self) -> None:
+        self.logger = logging.getLogger(__name__)
+
     def build(
         self,
         progressive: List[float],
@@ -17,9 +21,10 @@ class VerticalProfileBuilder:
         max_slope_pct: float,
         min_vertical_radius: float,
         forced_points_layer: Optional[QgsVectorLayer] = None,
+        axis_points: Optional[List[tuple[float, float]]] = None,
     ) -> ProfileData:
         z = terrain_z.copy()
-        forced = self._forced_by_progressive(progressive, terrain_z, forced_points_layer)
+        forced = self._forced_by_progressive(progressive, forced_points_layer, axis_points)
         for i, zp in forced.items():
             z[i] = zp
         max_slope = max_slope_pct / 100.0
@@ -33,10 +38,10 @@ class VerticalProfileBuilder:
     def _forced_by_progressive(
         self,
         progressive: List[float],
-        terrain_z: List[float],
         forced_layer: Optional[QgsVectorLayer],
+        axis_points: Optional[List[tuple[float, float]]],
     ) -> Dict[int, float]:
-        if not forced_layer or forced_layer.fields().indexFromName("z") < 0:
+        if not forced_layer or forced_layer.fields().indexFromName("z") < 0 or not axis_points:
             return {}
 
         idx = forced_layer.fields().indexFromName("z")
@@ -44,20 +49,17 @@ class VerticalProfileBuilder:
         if not feats or not progressive:
             return {}
 
+        axis_geom = QgsGeometry.fromPolylineXY([QgsPointXY(x, y) for x, y in axis_points])
+        if axis_geom.isEmpty() or axis_geom.length() <= 0:
+            return {}
+
+        step_guess = progressive[1] - progressive[0] if len(progressive) > 1 else 5.0
+        max_distance = max(5.0, step_guess * 3.0)
+
         out: Dict[int, float] = {}
+        out_dist: Dict[int, float] = {}
         n = len(progressive)
-
-        # Fallback v1 migliorato:
-        # associa ogni punto imposto alla progressiva più plausibile
-        # usando la sua posizione spaziale. Non avendo qui le coordinate
-        # dell'asse campionato, usiamo come euristica stabile:
-        # - x del punto come proxy della progressiva se coerente col profilo
-        # - altrimenti nearest index su distribuzione progressiva
-        #
-        # Questo evita l'errore grave della vecchia logica che assegnava
-        # i punti solo in base all'ordine di iterazione.
-
-        for f in feats:
+        for f in sorted(feats, key=lambda ft: ft.id()):
             geom = f.geometry()
             if geom.isEmpty():
                 continue
@@ -67,24 +69,33 @@ class VerticalProfileBuilder:
             except Exception:
                 continue
 
-            z_forced = float(f[idx])
+            try:
+                z_forced = float(f[idx])
+            except Exception:
+                self.logger.warning("Forced point %s skipped: invalid z value.", f.id())
+                continue
 
-            # Prova 1: usa la coordinata x del punto come progressiva target
-            target_progressive = float(pt.x())
-
-            # Se il valore è evidentemente fuori dal range delle progressive,
-            # usa il punto più vicino tra inizio/fine come fallback.
-            if target_progressive <= progressive[0]:
-                k = 0
-            elif target_progressive >= progressive[-1]:
-                k = n - 1
-            else:
-                k = min(
-                    range(n),
-                    key=lambda i: abs(progressive[i] - target_progressive),
+            nearest = axis_geom.nearestPoint(QgsGeometry.fromPointXY(QgsPointXY(pt.x(), pt.y())))
+            if nearest.isEmpty():
+                continue
+            np = nearest.asPoint()
+            dist = math.dist((pt.x(), pt.y()), (np.x(), np.y()))
+            if dist > max_distance:
+                self.logger.warning(
+                    "Forced point %s ignored: %.2f m away from axis (max %.2f m).",
+                    f.id(),
+                    dist,
+                    max_distance,
                 )
+                continue
 
-            out[k] = z_forced
+            target_progressive = axis_geom.lineLocatePoint(QgsGeometry.fromPointXY(np))
+            k = 0 if target_progressive <= progressive[0] else n - 1 if target_progressive >= progressive[-1] else min(
+                range(n), key=lambda i: abs(progressive[i] - target_progressive)
+            )
+            if k not in out or dist <= out_dist[k]:
+                out[k] = z_forced
+                out_dist[k] = dist
 
         return out
 

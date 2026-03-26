@@ -53,7 +53,7 @@ class SettingsManager:
         return settings.to_dict()
 
     def apply_ui_state(self, dialog, data: Dict[str, object]) -> None:
-        s = PluginSettings.from_dict(data)
+        s = PluginSettings.from_dict(self._validate_and_normalize(data))
         dialog.min_width.setValue(float(s.min_platform_width))
         dialog.crossfall_nominal.setValue(float(s.crossfall_nominal_pct))
         dialog.crossfall_min.setValue(float(s.crossfall_min_pct))
@@ -87,7 +87,7 @@ class SettingsManager:
             data = json.load(f)
         if not isinstance(data, dict):
             raise ValueError("Il contenuto JSON deve essere un oggetto.")
-        clean: Dict[str, object] = {}
+        clean: Dict[str, object] = PluginSettings().to_dict()
         for k, v in data.items():
             if k in self.NUMERIC_KEYS:
                 try:
@@ -96,4 +96,42 @@ class SettingsManager:
                     raise ValueError(f"Valore non numerico per {k}: {v}") from exc
             else:
                 clean[k] = v
+        return self._validate_and_normalize(clean)
+
+    def _validate_and_normalize(self, data: Dict[str, object]) -> Dict[str, object]:
+        clean = dict(data)
+        def _require_positive(key: str) -> None:
+            val = float(clean.get(key, 0.0))
+            if val <= 0:
+                raise ValueError(f"Il parametro '{key}' deve essere positivo.")
+
+        for key in (
+            "min_platform_width",
+            "min_plan_radius",
+            "min_vertical_radius",
+            "axis_sample_step",
+            "section_step",
+            "section_length",
+            "section_sample_step",
+            "cut_slope_hv",
+            "fill_slope_hv",
+        ):
+            _require_positive(key)
+
+        crossfall_min = float(clean.get("crossfall_min_pct", 0.0))
+        crossfall_max = float(clean.get("crossfall_max_pct", 0.0))
+        crossfall_nom = float(clean.get("crossfall_nominal_pct", 0.0))
+        if crossfall_min <= 0 or crossfall_max <= 0 or crossfall_nom <= 0:
+            raise ValueError("Le pendenze trasversali devono essere positive.")
+        if crossfall_min > crossfall_max:
+            raise ValueError("crossfall_min_pct non può superare crossfall_max_pct.")
+        if not (crossfall_min <= crossfall_nom <= crossfall_max):
+            raise ValueError("crossfall_nominal_pct deve ricadere tra minimo e massimo.")
+
+        max_long = float(clean.get("max_longitudinal_slope_pct", 0.0))
+        if max_long <= 0 or max_long > 100:
+            raise ValueError("max_longitudinal_slope_pct deve essere compreso tra 0 e 100.")
+        pad = float(clean.get("pad_slope_pct", 0.0))
+        if abs(pad) > 100:
+            raise ValueError("pad_slope_pct non plausibile (|valore| > 100%).")
         return clean

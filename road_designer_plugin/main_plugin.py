@@ -105,6 +105,7 @@ class RoadDesignerPlugin:
                 d.long_slope_max.value(),
                 d.vert_radius_min.value(),
                 forced,
+                align.points,
             )
             d.append_log("Profilo longitudinale di progetto calcolato")
             d.progress.setValue(45)
