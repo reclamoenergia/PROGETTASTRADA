@@ -38,6 +38,7 @@ class RoadModelBuilder:
         section.project_z = project_z
         section.road_core_z = core_z
         section.road_core_left_offset = -half_core
+        section.crown_offset = 0.0
         section.road_core_right_offset = half_core
         return section
 
@@ -45,8 +46,12 @@ class RoadModelBuilder:
         if not section.project_z or not section.terrain_z:
             return section
         w: WidthInfo = section.width_info or WidthInfo(0.0, 0.0, 0.0)
-        self._apply_side_slope(section, -max(w.left_width, 0.0), cut_hv, fill_hv, left=True)
-        self._apply_side_slope(section, max(w.right_width, 0.0), cut_hv, fill_hv, left=False)
+        section.side_slope_left_resolved = self._apply_side_slope(section, -max(w.left_width, 0.0), cut_hv, fill_hv, left=True)
+        section.side_slope_right_resolved = self._apply_side_slope(section, max(w.right_width, 0.0), cut_hv, fill_hv, left=False)
+        if not section.side_slope_left_resolved:
+            section.warnings.append("Scarpata sinistra approssimata: intercettazione terreno non trovata.")
+        if not section.side_slope_right_resolved:
+            section.warnings.append("Scarpata destra approssimata: intercettazione terreno non trovata.")
         return section
 
     def _project_z_for_progressive(self, profile: ProfileData, prog: float) -> float:
@@ -62,16 +67,16 @@ class RoadModelBuilder:
                 return z[i - 1] + (z[i] - z[i - 1]) * t
         return z[-1]
 
-    def _apply_side_slope(self, section: SectionData, edge_offset: float, cut_hv: float, fill_hv: float, left: bool) -> None:
+    def _apply_side_slope(self, section: SectionData, edge_offset: float, cut_hv: float, fill_hv: float, left: bool) -> bool:
         offsets = section.offsets
         if len(offsets) < 2:
-            return
+            return False
         edge_i = min(range(len(offsets)), key=lambda i: abs(offsets[i] - edge_offset))
         edge_x = offsets[edge_i]
         edge_z = section.project_z[edge_i]
         terrain_edge = section.terrain_z[edge_i]
         if not math.isfinite(edge_z) or not math.isfinite(terrain_edge):
-            return
+            return False
 
         # cut: terreno sopra il bordo strada; fill: terreno sotto il bordo strada
         is_cut = terrain_edge > edge_z
@@ -102,11 +107,15 @@ class RoadModelBuilder:
             prev_x, prev_diff = x, diff
 
         if hit_i is None:
-            # fallback: nessuna intercettazione trovata, estende il pendio fino al limite sezione
+            # fallback controllato: estensione limitata (non fino al bordo sezione)
+            max_ext = 20.0
             for i in indices:
                 x = offsets[i]
-                section.project_z[i] = edge_z + dzdx * (x - edge_x)
-            return
+                if abs(x - edge_x) <= max_ext + 1e-6:
+                    section.project_z[i] = edge_z + dzdx * (x - edge_x)
+                else:
+                    section.project_z[i] = section.terrain_z[i]
+            return False
 
         for i in indices:
             x = offsets[i]
@@ -114,3 +123,4 @@ class RoadModelBuilder:
                 section.project_z[i] = edge_z + dzdx * (x - edge_x)
             else:
                 section.project_z[i] = section.terrain_z[i]
+        return True

@@ -134,6 +134,8 @@ class RoadDesignerPlugin:
 
             warn = ConstraintChecker().check_longitudinal(profile, d.long_slope_max.value())
             warn += ConstraintChecker().check_crossfall(sections, d.crossfall_min.value(), d.crossfall_max.value())
+            for sec in sections:
+                warn.extend([f"Sezione {sec.index}: {w}" for w in sec.warnings])
             for w in warn[:20]:
                 d.append_log(f"WARNING: {w}")
             d.progress.setValue(80)
@@ -156,12 +158,18 @@ class RoadDesignerPlugin:
         exp_dxf = DxfExporter()
         if d.chk_dxf_sections.isChecked():
             p = os.path.join(folder, f"{name}_sections.dxf")
-            exp_dxf.export_sections(p, sections, d.min_width.value())
-            d.append_log(f"DXF sezioni: {p}")
+            try:
+                exp_dxf.export_sections(p, sections, d.min_width.value())
+                d.append_log(f"DXF sezioni: {p}")
+            except RuntimeError as exc:
+                self._warn(str(exc))
         if d.chk_dxf_profile.isChecked():
             p = os.path.join(folder, f"{name}_profile.dxf")
-            exp_dxf.export_profile(p, profile)
-            d.append_log(f"DXF profilo: {p}")
+            try:
+                exp_dxf.export_profile(p, profile)
+                d.append_log(f"DXF profilo: {p}")
+            except RuntimeError as exc:
+                self._warn(str(exc))
         if d.chk_csv.isChecked():
             p = os.path.join(folder, f"{name}_volumes.csv")
             TablesExporter().export_volumes_csv(p, vol)

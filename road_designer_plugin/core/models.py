@@ -33,7 +33,11 @@ class SectionData:
     project_z: List[float] = field(default_factory=list)
     road_core_z: List[float] = field(default_factory=list)
     road_core_left_offset: Optional[float] = None
+    crown_offset: float = 0.0
     road_core_right_offset: Optional[float] = None
+    side_slope_left_resolved: bool = True
+    side_slope_right_resolved: bool = True
+    warnings: List[str] = field(default_factory=list)
     cut_area: float = 0.0
     fill_area: float = 0.0
     width_info: Optional[WidthInfo] = None
