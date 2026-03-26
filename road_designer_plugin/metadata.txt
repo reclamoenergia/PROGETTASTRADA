@@ -1,0 +1,14 @@
+[general]
+name=Road Designer Plugin
+qgisMinimumVersion=3.22
+description=Progettazione altimetrica semplificata per viabilita di cantiere FV/eolico
+version=1.0.0
+author=Codex
+email=devnull@example.com
+about=Plugin v1 per asse raccordato, profilo longitudinale, sezioni, volumi, export DXF/CSV e parametri JSON.
+tracker=
+repository=
+category=Plugins
+icon=
+experimental=False
+deprecated=False

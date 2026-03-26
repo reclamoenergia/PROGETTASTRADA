@@ -1,0 +1,131 @@
+from __future__ import annotations
+
+import math
+from typing import Dict, List, Optional
+
+from qgis.core import QgsVectorLayer
+
+from .models import ProfileData
+from ..utils.math_utils import clamp
+
+
+class VerticalProfileBuilder:
+    def build(
+        self,
+        progressive: List[float],
+        terrain_z: List[float],
+        max_slope_pct: float,
+        min_vertical_radius: float,
+        forced_points_layer: Optional[QgsVectorLayer] = None,
+    ) -> ProfileData:
+        z = terrain_z.copy()
+        forced = self._forced_by_progressive(progressive, terrain_z, forced_points_layer)
+        for i, zp in forced.items():
+            z[i] = zp
+        max_slope = max_slope_pct / 100.0
+        z = self._limit_slopes(progressive, z, max_slope)
+        z = self._apply_vertical_smoothing(progressive, z, min_vertical_radius)
+        for i, zp in forced.items():
+            z[i] = zp
+        z = self._limit_slopes(progressive, z, max_slope)
+        return ProfileData(progressive=progressive, terrain_z=terrain_z, project_z=z)
+
+    def _forced_by_progressive(
+        self,
+        progressive: List[float],
+        terrain_z: List[float],
+        forced_layer: Optional[QgsVectorLayer],
+    ) -> Dict[int, float]:
+        if not forced_layer or forced_layer.fields().indexFromName("z") < 0:
+            return {}
+
+        idx = forced_layer.fields().indexFromName("z")
+        feats = list(forced_layer.getFeatures())
+        if not feats or not progressive:
+            return {}
+
+        out: Dict[int, float] = {}
+        n = len(progressive)
+
+        # Fallback v1 migliorato:
+        # associa ogni punto imposto alla progressiva più plausibile
+        # usando la sua posizione spaziale. Non avendo qui le coordinate
+        # dell'asse campionato, usiamo come euristica stabile:
+        # - x del punto come proxy della progressiva se coerente col profilo
+        # - altrimenti nearest index su distribuzione progressiva
+        #
+        # Questo evita l'errore grave della vecchia logica che assegnava
+        # i punti solo in base all'ordine di iterazione.
+
+        for f in feats:
+            geom = f.geometry()
+            if geom.isEmpty():
+                continue
+
+            try:
+                pt = geom.asPoint()
+            except Exception:
+                continue
+
+            z_forced = float(f[idx])
+
+            # Prova 1: usa la coordinata x del punto come progressiva target
+            target_progressive = float(pt.x())
+
+            # Se il valore è evidentemente fuori dal range delle progressive,
+            # usa il punto più vicino tra inizio/fine come fallback.
+            if target_progressive <= progressive[0]:
+                k = 0
+            elif target_progressive >= progressive[-1]:
+                k = n - 1
+            else:
+                k = min(
+                    range(n),
+                    key=lambda i: abs(progressive[i] - target_progressive),
+                )
+
+            out[k] = z_forced
+
+        return out
+
+    def _limit_slopes(self, s: List[float], z: List[float], max_slope: float) -> List[float]:
+        out = z.copy()
+        for i in range(1, len(out)):
+            ds = s[i] - s[i - 1]
+            if ds <= 0:
+                continue
+            dz = out[i] - out[i - 1]
+            lim = max_slope * ds
+            out[i] = out[i - 1] + clamp(dz, -lim, lim)
+
+        for i in range(len(out) - 2, -1, -1):
+            ds = s[i + 1] - s[i]
+            if ds <= 0:
+                continue
+            dz = out[i] - out[i + 1]
+            lim = max_slope * ds
+            out[i] = out[i + 1] + clamp(dz, -lim, lim)
+
+        return out
+
+    def _apply_vertical_smoothing(self, s: List[float], z: List[float], min_radius: float) -> List[float]:
+        if len(z) < 3:
+            return z
+
+        out = z.copy()
+
+        # v1 semplificato: filtro su cambio pendenza equivalente a raggio minimo
+        for i in range(1, len(out) - 1):
+            ds0 = max(1e-6, s[i] - s[i - 1])
+            ds1 = max(1e-6, s[i + 1] - s[i])
+            g0 = (out[i] - out[i - 1]) / ds0
+            g1 = (out[i + 1] - out[i]) / ds1
+            dg = g1 - g0
+            ds = (ds0 + ds1) / 2
+            max_dg = ds / max(min_radius, 1.0)
+
+            if abs(dg) > max_dg:
+                target_g1 = g0 + math.copysign(max_dg, dg)
+                out[i + 1] = out[i] + target_g1 * ds1
+
+        return out
