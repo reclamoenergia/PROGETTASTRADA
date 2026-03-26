@@ -18,6 +18,7 @@ from .core.vertical_profile import VerticalProfileBuilder
 from .core.width_analysis import WidthAnalysis
 from .export.dxf_exporter import DxfExporter
 from .export.tables_exporter import TablesExporter
+from .export.vector_exporter import VectorExporter
 from .ui.main_dialog import MainDialog
 
 
@@ -140,37 +141,46 @@ class RoadDesignerPlugin:
                 d.append_log(f"WARNING: {w}")
             d.progress.setValue(80)
 
-            self._run_exports(profile, sections, vol)
+            self._run_exports(align, axis, profile, sections, vol)
             d.progress.setValue(100)
             self._info("Calcolo completato con successo")
         except Exception as exc:
             self._warn(f"Errore durante il calcolo: {exc}")
 
-    def _run_exports(self, profile, sections, vol):
+    def _run_exports(self, align, axis_layer, profile, sections, vol):
         d = self.dialog
         if not d:
             return
         folder = d.output_folder.text().strip()
         if not folder:
-            self._warn("Cartella output non impostata.")
-            return
+            d.append_log("WARNING: Cartella output non impostata: i layer vettoriali saranno creati solo in memoria.")
         name = d.project_name.text().strip() or "road_project"
+        crs_authid = axis_layer.crs().authid() if axis_layer and axis_layer.crs().isValid() else QgsProject.instance().crs().authid()
+
+        vec_result = VectorExporter().export_outputs(align, sections, folder, name, crs_authid)
+        d.append_log(
+            "Layer QGIS creati: "
+            f"{vec_result['axis_layer_name']}, {vec_result['sections_layer_name']}, {vec_result['slopes_layer_name']}"
+        )
+        for path in vec_result["saved_paths"]:
+            d.append_log(f"Vettoriale salvato: {path}")
+
         exp_dxf = DxfExporter()
-        if d.chk_dxf_sections.isChecked():
+        if folder and d.chk_dxf_sections.isChecked():
             p = os.path.join(folder, f"{name}_sections.dxf")
             try:
                 exp_dxf.export_sections(p, sections, d.min_width.value())
                 d.append_log(f"DXF sezioni: {p}")
             except RuntimeError as exc:
                 self._warn(str(exc))
-        if d.chk_dxf_profile.isChecked():
+        if folder and d.chk_dxf_profile.isChecked():
             p = os.path.join(folder, f"{name}_profile.dxf")
             try:
                 exp_dxf.export_profile(p, profile)
                 d.append_log(f"DXF profilo: {p}")
             except RuntimeError as exc:
                 self._warn(str(exc))
-        if d.chk_csv.isChecked():
+        if folder and d.chk_csv.isChecked():
             p = os.path.join(folder, f"{name}_volumes.csv")
             TablesExporter().export_volumes_csv(p, vol)
             d.append_log(f"CSV volumi: {p}")
