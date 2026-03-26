@@ -4,14 +4,30 @@ import math
 from pathlib import Path
 from typing import List
 
-import ezdxf
-
 from ..core.models import ProfileData, SectionData
 
 
 class DxfExporter:
+    @staticmethod
+    def is_ezdxf_available() -> bool:
+        try:
+            import ezdxf  # type: ignore
+
+            return ezdxf is not None
+        except ImportError:
+            return False
+
+    def _new_doc(self):
+        try:
+            import ezdxf  # type: ignore
+        except ImportError as exc:
+            raise RuntimeError(
+                "Libreria opzionale 'ezdxf' non disponibile. Installare 'ezdxf' per esportare DXF."
+            ) from exc
+        return ezdxf.new(setup=True)
+
     def export_sections(self, path: str, sections: List[SectionData], min_width: float) -> str:
-        doc = ezdxf.new(setup=True)
+        doc = self._new_doc()
         msp = doc.modelspace()
         for layer in [
             "SEZ_TERRAIN",
@@ -53,7 +69,7 @@ class DxfExporter:
         return str(out)
 
     def export_profile(self, path: str, profile: ProfileData) -> str:
-        doc = ezdxf.new(setup=True)
+        doc = self._new_doc()
         msp = doc.modelspace()
         for layer in ["PROF_TERRAIN", "PROF_PROJECT", "PROF_AXIS", "PROF_TEXT"]:
             if layer not in doc.layers:

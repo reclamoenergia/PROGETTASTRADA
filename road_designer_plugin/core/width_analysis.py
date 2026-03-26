@@ -80,11 +80,13 @@ class WidthAnalysis:
                 for i in range(0, len(scalars) - 1, 2):
                     intervals.append((scalars[i], scalars[i + 1]))
         elif gtype == QgsWkbTypes.PolygonGeometry:
-            # fallback robusto per geometrie patologiche: usa bbox della parte intersecata
-            bb = geom.boundingBox()
-            c0 = (bb.xMinimum() - ref.x()) * ux + (bb.yMinimum() - ref.y()) * uy
-            c1 = (bb.xMaximum() - ref.x()) * ux + (bb.yMaximum() - ref.y()) * uy
-            intervals.append((min(c0, c1), max(c0, c1)))
+            intervals.extend(self._polygon_intervals(geom, ref, ux, uy))
+            if not intervals:
+                # ultimo fallback: bbox solo se non è possibile estrarre intervalli geometrici utili
+                bb = geom.boundingBox()
+                c0 = (bb.xMinimum() - ref.x()) * ux + (bb.yMinimum() - ref.y()) * uy
+                c1 = (bb.xMaximum() - ref.x()) * ux + (bb.yMaximum() - ref.y()) * uy
+                intervals.append((min(c0, c1), max(c0, c1)))
         merged: List[Tuple[float, float]] = []
         for a, b in sorted(intervals):
             if not merged or a > merged[-1][1] + 1e-6:
@@ -92,6 +94,29 @@ class WidthAnalysis:
             else:
                 merged[-1] = (merged[-1][0], max(merged[-1][1], b))
         return [(a, b) for a, b in merged if math.isfinite(a) and math.isfinite(b) and b - a > 1e-6]
+
+    def _polygon_intervals(self, geom: QgsGeometry, ref: QgsPointXY, ux: float, uy: float) -> List[Tuple[float, float]]:
+        intervals: List[Tuple[float, float]] = []
+        boundary = geom.boundary()
+        if not boundary.isEmpty():
+            pts = self._extract_points(boundary)
+            if len(pts) >= 2:
+                scalars = sorted((p.x() - ref.x()) * ux + (p.y() - ref.y()) * uy for p in pts)
+                for i in range(0, len(scalars) - 1, 2):
+                    intervals.append((scalars[i], scalars[i + 1]))
+        if intervals:
+            return intervals
+
+        polys = geom.asMultiPolygon() if geom.isMultipart() else [geom.asPolygon()]
+        for poly in polys:
+            if not poly:
+                continue
+            outer = poly[0]
+            if len(outer) < 2:
+                continue
+            scalars = [((p.x() - ref.x()) * ux + (p.y() - ref.y()) * uy) for p in outer]
+            intervals.append((min(scalars), max(scalars)))
+        return intervals
 
     def _extract_points(self, geom: QgsGeometry):
         gtype = QgsWkbTypes.geometryType(geom.wkbType())
