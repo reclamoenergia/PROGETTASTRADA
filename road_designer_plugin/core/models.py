@@ -37,6 +37,10 @@ class SectionData:
     road_core_right_offset: Optional[float] = None
     side_slope_left_resolved: bool = True
     side_slope_right_resolved: bool = True
+    side_slope_left_outer_offset: Optional[float] = None
+    side_slope_right_outer_offset: Optional[float] = None
+    side_slope_left_note: str = ""
+    side_slope_right_note: str = ""
     warnings: List[str] = field(default_factory=list)
     cut_area: float = 0.0
     fill_area: float = 0.0
