@@ -39,6 +39,8 @@ class SectionData:
     side_slope_right_resolved: bool = True
     left_slope_resolved: bool = True
     right_slope_resolved: bool = True
+    left_slope_hit_offset: Optional[float] = None
+    right_slope_hit_offset: Optional[float] = None
     side_slope_left_outer_offset: Optional[float] = None
     side_slope_right_outer_offset: Optional[float] = None
     side_slope_left_note: str = ""

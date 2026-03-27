@@ -57,6 +57,10 @@ class DxfExporter:
         text_gap = 2.0
         text_band = 3.0
         stack_gap = 3.0
+        table_gap = 1.0
+        table_row_h = 1.8
+        table_text_h = 1.1
+        table_max_cols = 7
         for s in sections:
             if not s.offsets or not s.terrain_z or not s.project_z:
                 continue
@@ -77,9 +81,12 @@ class DxfExporter:
             y_geom_min = y_shift + z_min * z_scale
             y_geom_max = y_shift + z_max * z_scale
             y_text = y_geom_max + text_gap
+            table_points = self._collect_table_points(s)
+            table_height = table_row_h * 5.0
+            table_width = max(frame_margin_x * 2.0 + (x_right - x_left), 70.0)
             frame_left = x_left - frame_margin_x
             frame_right = x_right + frame_margin_x
-            frame_bottom = y_geom_min - frame_margin_y
+            frame_bottom = y_geom_min - frame_margin_y - table_gap - table_height
             frame_top = y_text + text_band
             frame = [
                 (frame_left, frame_bottom),
@@ -120,6 +127,30 @@ class DxfExporter:
             )
             # 7) text
             msp.add_text(txt, dxfattribs={"height": 1.5, "layer": "SEZ_TEXT"}).set_placement((axis_x, y_text))
+            if not s.left_slope_resolved:
+                msp.add_text(
+                    "Scarpata SX approssimata",
+                    dxfattribs={"height": 1.1, "layer": "SEZ_TEXT"},
+                ).set_placement((frame_left + 1.0, y_geom_max - 1.5))
+            if not s.right_slope_resolved:
+                msp.add_text(
+                    "Scarpata DX approssimata",
+                    dxfattribs={"height": 1.1, "layer": "SEZ_TEXT"},
+                ).set_placement((frame_right - 25.0, y_geom_max - 1.5))
+
+            table_left = axis_x - table_width / 2.0
+            table_right = axis_x + table_width / 2.0
+            table_top = y_geom_min - frame_margin_y - table_gap
+            self._draw_section_table(
+                msp,
+                s,
+                table_points[:table_max_cols],
+                table_left,
+                table_right,
+                table_top,
+                table_row_h,
+                table_text_h,
+            )
 
             section_height = (frame_top - frame_bottom) * 1.25  # +25% margine dinamico
             y_shift -= section_height + stack_gap + vertical_span * 0.2
@@ -127,6 +158,93 @@ class DxfExporter:
         out.parent.mkdir(parents=True, exist_ok=True)
         doc.saveas(str(out))
         return str(out)
+
+    def _draw_section_table(
+        self,
+        msp,
+        section: SectionData,
+        points: list[dict],
+        left: float,
+        right: float,
+        top: float,
+        row_h: float,
+        text_h: float,
+    ) -> None:
+        if not points:
+            return
+        rows = [
+            "PUNTO",
+            "OFFSET [m]",
+            "TERRENO Z [m]",
+            "PROGETTO Z [m]",
+            "PROG [m]",
+        ]
+        label_col_w = 16.0
+        ncols = max(1, len(points))
+        value_w = max((right - left - label_col_w) / ncols, 8.0)
+        table_right = left + label_col_w + value_w * ncols
+        table_bottom = top - row_h * len(rows)
+
+        msp.add_lwpolyline(
+            [(left, top), (table_right, top), (table_right, table_bottom), (left, table_bottom), (left, top)],
+            dxfattribs={"layer": "SEZ_FRAME", "closed": True},
+        )
+        # Righe orizzontali
+        for ridx in range(1, len(rows)):
+            y = top - row_h * ridx
+            msp.add_line((left, y), (table_right, y), dxfattribs={"layer": "SEZ_FRAME"})
+        # Colonne verticali
+        msp.add_line((left + label_col_w, top), (left + label_col_w, table_bottom), dxfattribs={"layer": "SEZ_FRAME"})
+        for c in range(1, ncols):
+            x = left + label_col_w + value_w * c
+            msp.add_line((x, top), (x, table_bottom), dxfattribs={"layer": "SEZ_FRAME"})
+
+        for ridx, label in enumerate(rows):
+            y_mid = top - row_h * ridx - row_h * 0.65
+            msp.add_text(label, dxfattribs={"height": text_h, "layer": "SEZ_TEXT"}).set_placement((left + 0.8, y_mid))
+
+        for cidx, item in enumerate(points):
+            x_mid = left + label_col_w + value_w * cidx + 0.4
+            texts = [
+                item["label"],
+                f"{item['offset']:.2f}",
+                f"{item['terrain_z']:.2f}" if math.isfinite(item["terrain_z"]) else "-",
+                f"{item['project_z']:.2f}" if math.isfinite(item["project_z"]) else "-",
+                f"{section.progressive:.2f}",
+            ]
+            for ridx, value in enumerate(texts):
+                y_mid = top - row_h * ridx - row_h * 0.65
+                msp.add_text(value, dxfattribs={"height": text_h, "layer": "SEZ_TEXT"}).set_placement((x_mid, y_mid))
+
+    def _collect_table_points(self, section: SectionData) -> list[dict]:
+        pts: list[tuple[str, float]] = []
+        if not section.offsets:
+            return []
+        pts.append(("LIM SX", section.offsets[0]))
+        if section.side_slope_left_outer_offset is not None:
+            pts.append(("SCARP SX", section.side_slope_left_outer_offset))
+        if section.width_info is not None:
+            pts.append(("PIATTA SX", -section.width_info.left_width))
+            pts.append(("ASSE", 0.0))
+            pts.append(("PIATTA DX", section.width_info.right_width))
+        else:
+            pts.append(("ASSE", 0.0))
+        if section.side_slope_right_outer_offset is not None:
+            pts.append(("SCARP DX", section.side_slope_right_outer_offset))
+        pts.append(("LIM DX", section.offsets[-1]))
+
+        unique: list[tuple[str, float]] = []
+        for label, off in sorted(pts, key=lambda x: x[1]):
+            if unique and abs(unique[-1][1] - off) <= 1e-4:
+                continue
+            unique.append((label, off))
+
+        result: list[dict] = []
+        for label, off in unique:
+            terr = self._interp_piecewise(section.offsets, section.terrain_z, off)
+            proj = self._interp_piecewise(section.offsets, section.project_z, off)
+            result.append({"label": label, "offset": off, "terrain_z": terr, "project_z": proj})
+        return result
 
     def _build_slope_segment(
         self, section: SectionData, left: bool, axis_x: float, y_shift: float, z_scale: float
