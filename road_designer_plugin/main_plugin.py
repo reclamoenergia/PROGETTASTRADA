@@ -176,8 +176,11 @@ class RoadDesignerPlugin:
                     p,
                     profile=prof_data,
                     sections=sec_data,
-                    quote_step_m=d.section_sample_step.value(),
-                    section_z_exaggeration=DxfExporter.DEFAULT_Z_EXAGGERATION,
+                    quote_step_m=d.section_quote_step.value(),
+                    section_z_exaggeration=d.section_vertical_exaggeration.value(),
+                    profile_h_scale=d.profile_h_scale.value(),
+                    profile_v_scale=d.profile_v_scale.value(),
+                    section_h_scale=d.section_scale.value(),
                     min_width=d.min_width.value(),
                 )
                 d.append_log(f"DXF layout completo: {p}")
