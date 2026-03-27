@@ -55,6 +55,9 @@ class RoadModelBuilder:
         )
         section.side_slope_left_resolved = left_ok
         section.side_slope_right_resolved = right_ok
+        # Alias richiesto per diagnostica/consumi esterni.
+        section.left_slope_resolved = left_ok
+        section.right_slope_resolved = right_ok
         section.side_slope_left_outer_offset = left_outer
         section.side_slope_right_outer_offset = right_outer
         section.side_slope_left_note = left_note
@@ -102,17 +105,14 @@ class RoadModelBuilder:
 
         hit_x = self._find_first_outward_intersection(offsets, terrain, edge_x, edge_z, dzdx, left, tol)
         if hit_x is None:
-            max_ext = 20.0
-            available = (edge_x - min_x) if left else (max_x - edge_x)
-            ext = max(0.0, min(max_ext, available))
-            limit_x = edge_x - ext if left else edge_x + ext
+            # Nessuna intercettazione trovata: NON collassare al terreno.
+            # Estendi la scarpata fino al limite sezione.
+            limit_x = min_x if left else max_x
             for i, x in enumerate(offsets):
-                if self._is_outward_from_edge(x, edge_x, left, tol) and abs(x - edge_x) <= ext + tol:
+                if self._is_outward_from_edge(x, edge_x, left, tol):
                     section.project_z[i] = edge_z + dzdx * (x - edge_x)
-                elif self._is_outward_from_edge(x, edge_x, left, tol):
-                    section.project_z[i] = terrain[i]
             slope_kind = "sterro" if is_cut else "riporto"
-            return False, limit_x, f"Scarpata {slope_kind} non risolta; fallback limitato a {ext:.1f} m."
+            return False, limit_x, f"Scarpata {slope_kind} non risolta; estesa fino al limite sezione."
 
         for i, x in enumerate(offsets):
             if not self._is_outward_from_edge(x, edge_x, left, tol):
