@@ -22,6 +22,11 @@ class SettingsManager:
         "section_step",
         "section_length",
         "section_sample_step",
+        "profile_h_scale",
+        "profile_v_scale",
+        "section_scale",
+        "section_vertical_exaggeration",
+        "section_quote_step",
     }
 
     def collect_ui_state(self, dialog) -> Dict[str, object]:
@@ -40,6 +45,11 @@ class SettingsManager:
             section_step=dialog.section_step.value(),
             section_length=dialog.section_length.value(),
             section_sample_step=dialog.section_sample_step.value(),
+            profile_h_scale=dialog.profile_h_scale.value(),
+            profile_v_scale=dialog.profile_v_scale.value(),
+            section_scale=dialog.section_scale.value(),
+            section_vertical_exaggeration=dialog.section_vertical_exaggeration.value(),
+            section_quote_step=dialog.section_quote_step.value(),
             output_folder=dialog.output_folder.text(),
             project_name=dialog.project_name.text(),
             export_sections_dxf=dialog.chk_dxf_sections.isChecked(),
@@ -68,6 +78,11 @@ class SettingsManager:
         dialog.section_step.setValue(float(s.section_step))
         dialog.section_length.setValue(float(s.section_length))
         dialog.section_sample_step.setValue(float(s.section_sample_step))
+        dialog.profile_h_scale.setValue(float(s.profile_h_scale))
+        dialog.profile_v_scale.setValue(float(s.profile_v_scale))
+        dialog.section_scale.setValue(float(s.section_scale))
+        dialog.section_vertical_exaggeration.setValue(float(s.section_vertical_exaggeration))
+        dialog.section_quote_step.setValue(float(s.section_quote_step))
         dialog.output_folder.setText(str(s.output_folder))
         dialog.project_name.setText(str(s.project_name))
         dialog.chk_dxf_sections.setChecked(bool(s.export_sections_dxf))
@@ -113,6 +128,11 @@ class SettingsManager:
             "section_step",
             "section_length",
             "section_sample_step",
+            "profile_h_scale",
+            "profile_v_scale",
+            "section_scale",
+            "section_vertical_exaggeration",
+            "section_quote_step",
             "cut_slope_hv",
             "fill_slope_hv",
         ):

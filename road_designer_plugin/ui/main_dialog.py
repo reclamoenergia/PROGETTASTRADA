@@ -93,6 +93,11 @@ class MainDialog(QDialog):
         self.section_step = self._spin(20, 1, 1000)
         self.section_length = self._spin(80, 5, 1000)
         self.section_sample_step = self._spin(1, 0.1, 10)
+        self.profile_h_scale = self._spin(1000, 50, 20000, 10)
+        self.profile_v_scale = self._spin(200, 10, 5000, 10)
+        self.section_scale = self._spin(200, 10, 5000, 10)
+        self.section_vertical_exaggeration = self._spin(2, 0.1, 20, 0.1)
+        self.section_quote_step = self._spin(5, 0.1, 100, 0.1)
         gl.addWidget(QLabel("Passo lungo asse"), 0, 0)
         gl.addWidget(self.axis_step, 0, 1)
         gl.addWidget(QLabel("Passo sezioni"), 1, 0)
@@ -101,6 +106,16 @@ class MainDialog(QDialog):
         gl.addWidget(self.section_length, 2, 1)
         gl.addWidget(QLabel("Passo campionamento sezione"), 3, 0)
         gl.addWidget(self.section_sample_step, 3, 1)
+        gl.addWidget(QLabel("Scala profilo orizzontale (1:n)"), 4, 0)
+        gl.addWidget(self.profile_h_scale, 4, 1)
+        gl.addWidget(QLabel("Scala profilo verticale (1:n)"), 5, 0)
+        gl.addWidget(self.profile_v_scale, 5, 1)
+        gl.addWidget(QLabel("Scala sezioni (1:n)"), 6, 0)
+        gl.addWidget(self.section_scale, 6, 1)
+        gl.addWidget(QLabel("Esagerazione verticale sezioni"), 7, 0)
+        gl.addWidget(self.section_vertical_exaggeration, 7, 1)
+        gl.addWidget(QLabel("Passo quotazione sezione [m]"), 8, 0)
+        gl.addWidget(self.section_quote_step, 8, 1)
         return gb
 
     def _build_output_group(self):

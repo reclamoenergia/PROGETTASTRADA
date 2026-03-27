@@ -97,6 +97,11 @@ class PluginSettings:
     section_step: float = 20.0
     section_length: float = 80.0
     section_sample_step: float = 1.0
+    profile_h_scale: float = 1000.0
+    profile_v_scale: float = 200.0
+    section_scale: float = 200.0
+    section_vertical_exaggeration: float = 2.0
+    section_quote_step: float = 5.0
     output_folder: str = ""
     project_name: str = "road_project"
     export_sections_dxf: bool = True
