@@ -58,6 +58,8 @@ class RoadModelBuilder:
         # Alias richiesto per diagnostica/consumi esterni.
         section.left_slope_resolved = left_ok
         section.right_slope_resolved = right_ok
+        section.left_slope_hit_offset = left_outer
+        section.right_slope_hit_offset = right_outer
         section.side_slope_left_outer_offset = left_outer
         section.side_slope_right_outer_offset = right_outer
         section.side_slope_left_note = left_note
@@ -104,6 +106,8 @@ class RoadModelBuilder:
         dzdx = (1.0 if is_cut else -1.0) * dir_out / hv
 
         hit_x = self._find_first_outward_intersection(offsets, terrain, edge_x, edge_z, dzdx, left, tol)
+        if hit_x is None:
+            hit_x = self._fallback_outward_search(offsets, terrain, edge_x, edge_z, dzdx, left, tol)
         if hit_x is None:
             # Nessuna intercettazione trovata: NON collassare al terreno.
             # Estendi la scarpata fino al limite sezione.
@@ -167,6 +171,13 @@ class RoadModelBuilder:
             mt = (z1 - z0) / dx
             den = slope_m - mt
             if abs(den) <= 1e-9:
+                # Terreno e scarpata quasi paralleli: intercetta vertici quasi coincidenti.
+                d0 = z0 - (edge_z + slope_m * (x0 - edge_x))
+                d1 = z1 - (edge_z + slope_m * (x1 - edge_x))
+                if abs(d0) <= 1e-3 and self._is_outward_from_edge(x0, edge_x, left, tol):
+                    return x0
+                if abs(d1) <= 1e-3 and self._is_outward_from_edge(x1, edge_x, left, tol):
+                    return x1
                 continue
             x_hit = (z0 - edge_z + slope_m * edge_x - mt * x0) / den
             seg_min = min(x0, x1) - tol
@@ -177,6 +188,58 @@ class RoadModelBuilder:
                 continue
             return x_hit
         return None
+
+    def _fallback_outward_search(
+        self,
+        offsets: List[float],
+        terrain: List[float],
+        edge_x: float,
+        edge_z: float,
+        slope_m: float,
+        left: bool,
+        tol: float,
+    ) -> float | None:
+        outward = [x for x in offsets if self._is_outward_from_edge(x, edge_x, left, tol)]
+        if not outward:
+            return None
+        outward_sorted = sorted(outward, reverse=left)
+        prev_x = edge_x
+        prev_d = self._terrain_minus_slope(offsets, terrain, prev_x, edge_x, edge_z, slope_m)
+        if not math.isfinite(prev_d):
+            prev_d = 0.0
+        for x in outward_sorted:
+            if abs(x - edge_x) <= tol:
+                continue
+            d = self._terrain_minus_slope(offsets, terrain, x, edge_x, edge_z, slope_m)
+            if not math.isfinite(d):
+                prev_x, prev_d = x, d
+                continue
+            # Hit quasi su vertice campionato.
+            if abs(d) <= 1e-3:
+                return x
+            if math.isfinite(prev_d) and (d * prev_d < 0.0):
+                # Oscillazioni locali: usa interpolazione lineare su diff(x).
+                den = d - prev_d
+                if abs(den) <= 1e-12:
+                    return x
+                t = -prev_d / den
+                t = max(0.0, min(1.0, t))
+                return prev_x + (x - prev_x) * t
+            prev_x, prev_d = x, d
+        return None
+
+    def _terrain_minus_slope(
+        self,
+        offsets: List[float],
+        terrain: List[float],
+        x: float,
+        edge_x: float,
+        edge_z: float,
+        slope_m: float,
+    ) -> float:
+        terr = self._interp_piecewise(offsets, terrain, x)
+        slp = edge_z + slope_m * (x - edge_x)
+        return terr - slp
 
     def _interp_piecewise(self, xs: List[float], ys: List[float], x: float) -> float:
         if not xs or not ys:

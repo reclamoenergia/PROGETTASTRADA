@@ -12,6 +12,7 @@ from qgis.core import (
     QgsProject,
     QgsVectorFileWriter,
     QgsVectorLayer,
+    QgsWkbTypes,
 )
 from qgis.PyQt.QtCore import QVariant
 
@@ -31,11 +32,19 @@ class VectorExporter:
         axis_layer = self._build_axis_layer(alignment, crs_authid, f"{project_name}_axis")
         sections_layer = self._build_sections_layer(sections, crs_authid, f"{project_name}_sections")
         slopes_layer = self._build_slopes_layer(sections, crs_authid, f"{project_name}_slopes")
+        surface_layer = self._build_project_surface_layer(
+            alignment,
+            sections,
+            crs_authid,
+            f"{project_name}_project_surface",
+            project_name,
+        )
 
         project = QgsProject.instance()
         project.addMapLayer(axis_layer)
         project.addMapLayer(sections_layer)
         project.addMapLayer(slopes_layer)
+        project.addMapLayer(surface_layer)
 
         saved_paths: List[str] = []
         if output_folder:
@@ -44,6 +53,7 @@ class VectorExporter:
                     self._save_layer(axis_layer, output_folder, f"{project_name}_axis"),
                     self._save_layer(sections_layer, output_folder, f"{project_name}_sections"),
                     self._save_layer(slopes_layer, output_folder, f"{project_name}_slopes"),
+                    self._save_layer(surface_layer, output_folder, f"{project_name}_project_surface"),
                 ]
             )
 
@@ -51,6 +61,7 @@ class VectorExporter:
             "axis_layer_name": axis_layer.name(),
             "sections_layer_name": sections_layer.name(),
             "slopes_layer_name": slopes_layer.name(),
+            "surface_layer_name": surface_layer.name(),
             "saved_paths": [p for p in saved_paths if p],
         }
 
@@ -119,6 +130,71 @@ class VectorExporter:
             feats.append(feat)
 
         pr.addFeatures(feats)
+        layer.updateExtents()
+        return layer
+
+    def _build_project_surface_layer(
+        self,
+        alignment: Alignment,
+        sections: List[SectionData],
+        crs_authid: str,
+        name: str,
+        project_name: str,
+    ) -> QgsVectorLayer:
+        layer = QgsVectorLayer(f"Polygon?crs={crs_authid}", name, "memory")
+        pr = layer.dataProvider()
+        fields = QgsFields()
+        fields.append(QgsField("id", QVariant.Int))
+        fields.append(QgsField("length_m", QVariant.Double, "double", 18, 3))
+        fields.append(QgsField("source_nm", QVariant.String, "string", 120))
+        fields.append(QgsField("note", QVariant.String, "string", 254))
+        pr.addAttributes(fields)
+        layer.updateFields()
+
+        left_pts: List[QgsPointXY] = []
+        right_pts: List[QgsPointXY] = []
+        approx_sections = 0
+        for sec in sections:
+            if not sec.offsets:
+                continue
+            wi = sec.width_info
+            left_off = -wi.left_width if wi is not None else (sec.road_core_left_offset if sec.road_core_left_offset is not None else -1.0)
+            right_off = wi.right_width if wi is not None else (sec.road_core_right_offset if sec.road_core_right_offset is not None else 1.0)
+            if right_off <= left_off:
+                continue
+            left_pts.append(self._point_from_offset(sec, left_off))
+            right_pts.append(self._point_from_offset(sec, right_off))
+            if (not sec.side_slope_left_resolved) or (not sec.side_slope_right_resolved):
+                approx_sections += 1
+
+        note = ""
+        if len(left_pts) >= 2 and len(right_pts) >= 2:
+            ring = left_pts + list(reversed(right_pts))
+            if ring and (ring[0] != ring[-1]):
+                ring.append(ring[0])
+            geom = QgsGeometry.fromPolygonXY([ring])
+            if geom.isEmpty():
+                note = "Poligono superficie vuoto."
+            else:
+                if not geom.isGeosValid():
+                    note = "Geometria superficie riparata con makeValid."
+                    geom = geom.makeValid()
+                    if geom.wkbType() in (QgsWkbTypes.GeometryCollection, QgsWkbTypes.Unknown):
+                        geoms = geom.asGeometryCollection()
+                        polys = [g for g in geoms if QgsWkbTypes.geometryType(g.wkbType()) == QgsWkbTypes.PolygonGeometry]
+                        if polys:
+                            geom = polys[0]
+                        else:
+                            note = "makeValid non ha prodotto un poligono valido."
+                if not geom.isEmpty():
+                    feat = QgsFeature(layer.fields())
+                    if approx_sections > 0:
+                        note = (note + " " if note else "") + f"{approx_sections} sezioni con scarpate approssimate."
+                    feat.setGeometry(geom)
+                    feat.setAttributes([1, alignment.length, project_name, note])
+                    pr.addFeature(feat)
+        else:
+            note = "Punti insufficienti per costruire la superficie progetto."
         layer.updateExtents()
         return layer
 

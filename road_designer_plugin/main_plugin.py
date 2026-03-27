@@ -160,7 +160,8 @@ class RoadDesignerPlugin:
         vec_result = VectorExporter().export_outputs(align, sections, folder, name, crs_authid)
         d.append_log(
             "Layer QGIS creati: "
-            f"{vec_result['axis_layer_name']}, {vec_result['sections_layer_name']}, {vec_result['slopes_layer_name']}"
+            f"{vec_result['axis_layer_name']}, {vec_result['sections_layer_name']}, "
+            f"{vec_result['slopes_layer_name']}, {vec_result['surface_layer_name']}"
         )
         for path in vec_result["saved_paths"]:
             d.append_log(f"Vettoriale salvato: {path}")
