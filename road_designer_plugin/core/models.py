@@ -37,6 +37,8 @@ class SectionData:
     road_core_right_offset: Optional[float] = None
     side_slope_left_resolved: bool = True
     side_slope_right_resolved: bool = True
+    left_slope_resolved: bool = True
+    right_slope_resolved: bool = True
     side_slope_left_outer_offset: Optional[float] = None
     side_slope_right_outer_offset: Optional[float] = None
     side_slope_left_note: str = ""
