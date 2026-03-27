@@ -248,11 +248,17 @@ class DxfExporter:
             msp.add_text(f"Prog {s_prog:.2f} - {e_prog:.2f}", dxfattribs={"height": 3.5, "layer": "PROF_TEXT"}).set_placement((graph_left, usable_top - 44.0))
 
             gx_span = max(1e-6, e_prog - s_prog)
-            gy_span = max(1e-6, max_z - min_z)
+            vertical_mm_per_m = 1000.0 / max(1.0, profile_v_scale)
+            y_base_ref = min_z
+            clipped_profile = False
 
             def map_point(p: float, z: float) -> tuple[float, float]:
+                nonlocal clipped_profile
                 x = graph_left + (p - s_prog) / gx_span * (graph_right - graph_left)
-                y = graph_bottom + (z - min_z) / gy_span * (graph_top - graph_bottom)
+                y_raw = graph_bottom + (z - y_base_ref) * vertical_mm_per_m
+                y = max(graph_bottom, min(graph_top, y_raw))
+                if abs(y - y_raw) > 1e-9:
+                    clipped_profile = True
                 return x, y
 
             terr_pts = [map_point(p, z) for p, z in zip(profile.progressive, profile.terrain_z) if s_prog <= p <= e_prog]
@@ -265,6 +271,11 @@ class DxfExporter:
                 [(graph_left, graph_bottom), (graph_right, graph_bottom), (graph_right, graph_top), (graph_left, graph_top), (graph_left, graph_bottom)],
                 dxfattribs={"layer": "PROF_FRAME", "closed": True},
             )
+            if clipped_profile:
+                msp.add_text(
+                    "ATTENZIONE: profilo ritagliato in verticale (scala V richiesta)",
+                    dxfattribs={"height": 2.2, "layer": "PROF_TEXT"},
+                ).set_placement((graph_left, graph_bottom - 6.0))
 
             marks = []
             for sec in [s for s in sections if s_prog <= s.progressive <= e_prog]:
@@ -491,7 +502,10 @@ class DxfExporter:
             if not math.isfinite(z_ref):
                 continue
             px, py = map_pt(p["offset"], z_ref)
-            msp.add_line((anchor_x, py), (anchor_x, table_top), dxfattribs={"layer": "SEZ_TABLE"})
+            if abs(anchor_x - px) <= 1e-6:
+                msp.add_line((px, py), (px, table_top), dxfattribs={"layer": "SEZ_TABLE"})
+            else:
+                msp.add_lwpolyline([(px, py), (px, table_top), (anchor_x, table_top)], dxfattribs={"layer": "SEZ_TABLE"})
 
     def _draw_section_table(self, msp, points: List[dict], left: float, right: float, top: float, bottom: float) -> dict:
         rows = ["OFFSET", "TERRENO", "PROGETTO"]
