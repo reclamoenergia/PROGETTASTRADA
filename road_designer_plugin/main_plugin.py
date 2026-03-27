@@ -167,18 +167,20 @@ class RoadDesignerPlugin:
             d.append_log(f"Vettoriale salvato: {path}")
 
         exp_dxf = DxfExporter()
-        if folder and d.chk_dxf_sections.isChecked():
-            p = os.path.join(folder, f"{name}_sections.dxf")
+        if folder and (d.chk_dxf_sections.isChecked() or d.chk_dxf_profile.isChecked()):
+            p = os.path.join(folder, f"{name}_layout.dxf")
             try:
-                exp_dxf.export_sections(p, sections, d.min_width.value())
-                d.append_log(f"DXF sezioni: {p}")
-            except RuntimeError as exc:
-                self._warn(str(exc))
-        if folder and d.chk_dxf_profile.isChecked():
-            p = os.path.join(folder, f"{name}_profile.dxf")
-            try:
-                exp_dxf.export_profile(p, profile)
-                d.append_log(f"DXF profilo: {p}")
+                prof_data = profile if d.chk_dxf_profile.isChecked() else None
+                sec_data = sections if d.chk_dxf_sections.isChecked() else []
+                exp_dxf.export_all_layout(
+                    p,
+                    profile=prof_data,
+                    sections=sec_data,
+                    quote_step_m=d.section_sample_step.value(),
+                    section_z_exaggeration=DxfExporter.DEFAULT_Z_EXAGGERATION,
+                    min_width=d.min_width.value(),
+                )
+                d.append_log(f"DXF layout completo: {p}")
             except RuntimeError as exc:
                 self._warn(str(exc))
         if folder and d.chk_csv.isChecked():
