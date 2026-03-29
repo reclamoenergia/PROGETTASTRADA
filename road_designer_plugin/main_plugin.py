@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import traceback
+import warnings
 from typing import Optional
 
 from qgis.PyQt.QtWidgets import QAction, QFileDialog
@@ -157,7 +159,7 @@ class RoadDesignerPlugin:
         name = d.project_name.text().strip() or "road_project"
         crs_authid = axis_layer.crs().authid() if axis_layer and axis_layer.crs().isValid() else QgsProject.instance().crs().authid()
 
-        try:
+        def _vector_export():
             vec_result = VectorExporter().export_outputs(align, sections, folder, name, crs_authid)
             d.append_log(
                 "Layer QGIS creati: "
@@ -166,19 +168,21 @@ class RoadDesignerPlugin:
             )
             for path in vec_result["saved_paths"]:
                 d.append_log(f"Vettoriale salvato: {path}")
-        except Exception as exc:
-            d.append_log(f"ERRORE: esportazione vettoriale fallita: {exc!r}")
+
+        self._run_export_step(phase="vector_export", sheet_type="n/a", fn=_vector_export)
 
         exp_dxf = DxfExporter()
-        if folder and (d.chk_dxf_sections.isChecked() or d.chk_dxf_profile.isChecked()):
-            p = os.path.join(folder, f"{name}_layout.dxf")
-            try:
+        export_profile = folder and d.chk_dxf_profile.isChecked()
+        export_sections = folder and d.chk_dxf_sections.isChecked()
+        profile_path = os.path.join(folder, f"{name}_layout_profile.dxf") if export_profile and export_sections else os.path.join(folder, f"{name}_layout.dxf")
+        sections_path = os.path.join(folder, f"{name}_layout_sections.dxf") if export_profile and export_sections else os.path.join(folder, f"{name}_layout.dxf")
+        if export_profile:
+            def _profile_dxf_export():
                 prof_data = profile if d.chk_dxf_profile.isChecked() else None
-                sec_data = sections if d.chk_dxf_sections.isChecked() else []
                 exp_dxf.export_all_layout(
-                    p,
+                    profile_path,
                     profile=prof_data,
-                    sections=sec_data,
+                    sections=[],
                     quote_step_m=d.section_quote_step.value(),
                     section_z_exaggeration=d.section_vertical_exaggeration.value(),
                     profile_h_scale=d.profile_h_scale.value(),
@@ -186,17 +190,49 @@ class RoadDesignerPlugin:
                     section_h_scale=d.section_scale.value(),
                     min_width=d.min_width.value(),
                 )
-                d.append_log(f"DXF layout completo: {p}")
-            except Exception as exc:
-                d.append_log(f"ERRORE: esportazione DXF layout fallita: {exc!r}")
-                self._warn(str(exc))
+                d.append_log(f"DXF profilo: {profile_path}")
+            self._run_export_step(phase="dxf_export", sheet_type="profile", fn=_profile_dxf_export)
+        if export_sections:
+            def _sections_dxf_export():
+                exp_dxf.export_all_layout(
+                    sections_path,
+                    profile=None,
+                    sections=sections,
+                    quote_step_m=d.section_quote_step.value(),
+                    section_z_exaggeration=d.section_vertical_exaggeration.value(),
+                    profile_h_scale=d.profile_h_scale.value(),
+                    profile_v_scale=d.profile_v_scale.value(),
+                    section_h_scale=d.section_scale.value(),
+                    min_width=d.min_width.value(),
+                )
+                d.append_log(f"DXF sezioni: {sections_path}")
+            self._run_export_step(phase="dxf_export", sheet_type="sections", fn=_sections_dxf_export)
         if folder and d.chk_csv.isChecked():
             p = os.path.join(folder, f"{name}_volumes.csv")
-            try:
+            def _csv_export():
                 TablesExporter().export_volumes_csv(p, vol)
                 d.append_log(f"CSV volumi: {p}")
+            self._run_export_step(phase="csv_export", sheet_type="n/a", fn=_csv_export)
+
+    def _run_export_step(self, phase: str, sheet_type: str, fn):
+        d = self.dialog
+        if not d:
+            return
+        with warnings.catch_warnings(record=True) as caught_warnings:
+            warnings.simplefilter("ignore", DeprecationWarning)
+            try:
+                fn()
             except Exception as exc:
-                d.append_log(f"ERRORE: esportazione CSV fallita: {exc!r}")
+                d.append_log(
+                    "ERROR: export failed "
+                    f"| phase={phase} | sheet_type={sheet_type} | section_index=n/a | section_id=n/a "
+                    f"| repr={exc!r}\n{traceback.format_exc()}"
+                )
+                return
+        if caught_warnings:
+            dep_count = sum(1 for w in caught_warnings if issubclass(w.category, DeprecationWarning))
+            if dep_count:
+                d.append_log(f"WARNING: {phase} generated {dep_count} deprecated warnings (suppressed).")
 
     def save_json(self):
         d = self.dialog
