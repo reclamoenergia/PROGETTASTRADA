@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import math
+import traceback
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, List, Optional
@@ -37,6 +39,7 @@ class SheetSpec:
 
 
 class DxfExporter:
+    _logger = logging.getLogger(__name__)
     DEFAULT_Z_EXAGGERATION = 2.0
     PROFILE_H_SCALE = 1000.0
     PROFILE_V_SCALE = 200.0
@@ -391,7 +394,16 @@ class DxfExporter:
 
             x0 = col_x
             y0 = y_cursor - h
-            self._draw_single_section_cartiglio(msp, item, x0, y0, min_width)
+            sec = item.get("section")
+            try:
+                self._draw_single_section_cartiglio(msp, item, x0, y0, min_width)
+            except Exception as exc:
+                self._log_section_exception(
+                    section=sec,
+                    step="section_cartiglio",
+                    exc=exc,
+                )
+                continue
             y_cursor = y0 - 10.0
             col_width = max(col_width, w)
 
@@ -400,8 +412,11 @@ class DxfExporter:
     ) -> Optional[dict]:
         if not section.offsets or not section.terrain_z or not section.project_z:
             return None
-        x_min = min(section.offsets)
-        x_max = max(section.offsets)
+        offsets = [o for o in section.offsets if math.isfinite(o)]
+        if len(offsets) < 2:
+            return None
+        x_min = min(offsets)
+        x_max = max(offsets)
         z_vals = [z for z in section.terrain_z + section.project_z if math.isfinite(z)]
         if not z_vals:
             return None
@@ -414,6 +429,8 @@ class DxfExporter:
         table_h = 44.0
         cart_w = graph_w + 16.0
         cart_h = head_h + graph_h + table_h + 12.0
+        if not all(math.isfinite(v) and v > 0 for v in (graph_w, graph_h, cart_w, cart_h)):
+            return None
         points = self._build_quote_points(section, quote_step_m)
         return {
             "section": section,
@@ -434,17 +451,29 @@ class DxfExporter:
 
     def _draw_single_section_cartiglio(self, msp, item: dict, x0: float, y0: float, min_width: float) -> None:
         sec = item["section"]
+        current_step = "frame/cartiglio drawing"
         x1 = x0 + item["cart_w"]
         y1 = y0 + item["cart_h"]
-        msp.add_lwpolyline([(x0, y0), (x1, y0), (x1, y1), (x0, y1), (x0, y0)], dxfattribs={"layer": "SEZ_FRAME", "closed": True})
+        self._safe_add_polyline(
+            msp,
+            [(x0, y0), (x1, y0), (x1, y1), (x0, y1), (x0, y0)],
+            layer="SEZ_FRAME",
+            closed=True,
+            section=sec,
+            step=current_step,
+        )
 
         graph_left = x0 + 8.0
         graph_right = x1 - 8.0
         graph_bottom = y0 + item["table_h"] + 6.0
         graph_top = y1 - item["head_h"] - 4.0
-        msp.add_lwpolyline(
+        self._safe_add_polyline(
+            msp,
             [(graph_left, graph_bottom), (graph_right, graph_bottom), (graph_right, graph_top), (graph_left, graph_top), (graph_left, graph_bottom)],
-            dxfattribs={"layer": "SEZ_FRAME", "closed": True},
+            layer="SEZ_FRAME",
+            closed=True,
+            section=sec,
+            step=current_step,
         )
 
         axis_i = min(range(len(sec.offsets)), key=lambda i: abs(sec.offsets[i]))
@@ -454,6 +483,7 @@ class DxfExporter:
             f"Sez {sec.index} | Prog {sec.progressive:.2f} | Tasse {axis_t:.2f} | Passe {axis_p:.2f} | "
             f"Scala H 1:{int(item['section_h_scale'])} Vx{item['z_exaggeration']:.2f}"
         )
+        current_step = "text drawing"
         msp.add_text(hdr, dxfattribs={"height": 2.4, "layer": "SEZ_TEXT"}).set_placement((x0 + 4.0, y1 - 7.0))
         if min_width > 0:
             msp.add_text(f"Wmin {min_width:.2f}", dxfattribs={"height": 2.0, "layer": "SEZ_TEXT"}).set_placement((x1 - 35.0, y1 - 12.0))
@@ -466,33 +496,56 @@ class DxfExporter:
             y = graph_bottom + (z - item["z_min"]) / z_span * (graph_top - graph_bottom)
             return x, y
 
-        terr = [map_pt(o, z) for o, z in zip(sec.offsets, sec.terrain_z)]
-        proj = [map_pt(o, z) for o, z in zip(sec.offsets, sec.project_z)]
-        core = [map_pt(o, z) for o, z in zip(sec.offsets, sec.road_core_z)] if sec.road_core_z else []
-        if len(terr) >= 2:
-            msp.add_lwpolyline(terr, dxfattribs={"layer": "SEZ_TERRAIN"})
-        if len(proj) >= 2:
-            msp.add_lwpolyline(proj, dxfattribs={"layer": "SEZ_PROJECT"})
-        if len(core) >= 2:
-            msp.add_lwpolyline(core, dxfattribs={"layer": "SEZ_ROAD_CORE"})
+        current_step = "terrain polyline drawing"
+        terr = [map_pt(o, z) for o, z in zip(sec.offsets, sec.terrain_z) if math.isfinite(o) and math.isfinite(z)]
+        self._safe_add_polyline(msp, terr, layer="SEZ_TERRAIN", section=sec, step=current_step)
 
+        current_step = "project polyline drawing"
+        proj = [map_pt(o, z) for o, z in zip(sec.offsets, sec.project_z) if math.isfinite(o) and math.isfinite(z)]
+        self._safe_add_polyline(msp, proj, layer="SEZ_PROJECT", section=sec, step=current_step)
+
+        current_step = "road core polyline drawing"
+        core = [map_pt(o, z) for o, z in zip(sec.offsets, sec.road_core_z) if math.isfinite(o) and math.isfinite(z)] if sec.road_core_z else []
+        self._safe_add_polyline(msp, core, layer="SEZ_ROAD_CORE", section=sec, step=current_step)
+
+        current_step = "slopes drawing"
         pad = self._build_pad_polyline(sec)
-        if len(pad) >= 2:
-            msp.add_lwpolyline([map_pt(o, z) for o, z in pad], dxfattribs={"layer": "SEZ_PAD"})
+        self._safe_add_polyline(
+            msp,
+            [map_pt(o, z) for o, z in pad if math.isfinite(o) and math.isfinite(z)],
+            layer="SEZ_PAD",
+            section=sec,
+            step=current_step,
+        )
         ls = self._build_slope_segment(sec, left=True)
         rs = self._build_slope_segment(sec, left=False)
-        if len(ls) == 2:
-            msp.add_lwpolyline([map_pt(*ls[0]), map_pt(*ls[1])], dxfattribs={"layer": "SEZ_SLOPES"})
-        if len(rs) == 2:
-            msp.add_lwpolyline([map_pt(*rs[0]), map_pt(*rs[1])], dxfattribs={"layer": "SEZ_SLOPES"})
+        self._safe_add_polyline(
+            msp,
+            [map_pt(*ls[0]), map_pt(*ls[1])] if len(ls) == 2 else [],
+            layer="SEZ_SLOPES",
+            section=sec,
+            step=current_step,
+        )
+        self._safe_add_polyline(
+            msp,
+            [map_pt(*rs[0]), map_pt(*rs[1])] if len(rs) == 2 else [],
+            layer="SEZ_SLOPES",
+            section=sec,
+            step=current_step,
+        )
 
+        current_step = "axis drawing"
         ax0, ay0 = map_pt(0.0, item["z_min"])
         _, ay1 = map_pt(0.0, item["z_max"])
-        msp.add_line((ax0, ay0), (ax0, ay1), dxfattribs={"layer": "SEZ_AXIS"})
+        if self._is_valid_point((ax0, ay0)) and self._is_valid_point((ax0, ay1)):
+            msp.add_line((ax0, ay0), (ax0, ay1), dxfattribs={"layer": "SEZ_AXIS"})
 
         table_top = y0 + item["table_h"] + 2.0
         table_bottom = y0 + 3.0
+        current_step = "table drawing"
         table_data = self._draw_section_table(msp, item["points"], x0 + 8.0, x1 - 8.0, table_top, table_bottom)
+
+        current_step = "quote/candle drawing"
         point_anchor = {round(p["offset"], 6): p["x"] for p in table_data["points"]}
         for p in item["points"]:
             anchor_x = point_anchor.get(round(p["offset"], 6))
@@ -502,18 +555,28 @@ class DxfExporter:
             if not math.isfinite(z_ref):
                 continue
             px, py = map_pt(p["offset"], z_ref)
+            if not self._is_valid_point((px, py)) or not math.isfinite(anchor_x):
+                continue
             if abs(anchor_x - px) <= 1e-6:
                 msp.add_line((px, py), (px, table_top), dxfattribs={"layer": "SEZ_TABLE"})
             else:
-                msp.add_lwpolyline([(px, py), (px, table_top), (anchor_x, table_top)], dxfattribs={"layer": "SEZ_TABLE"})
+                self._safe_add_polyline(
+                    msp,
+                    [(px, py), (px, table_top), (anchor_x, table_top)],
+                    layer="SEZ_TABLE",
+                    section=sec,
+                    step=current_step,
+                )
 
     def _draw_section_table(self, msp, points: List[dict], left: float, right: float, top: float, bottom: float) -> dict:
         rows = ["OFFSET", "TERRENO", "PROGETTO"]
         label_w = 22.0
         available_w = max(10.0, right - left - label_w)
+        if top <= bottom:
+            top = bottom + 6.0
         points = self._reduce_quote_points_for_width(points, available_w)
         n = max(1, len(points))
-        row_h = (top - bottom) / len(rows)
+        row_h = max(1e-6, (top - bottom) / max(1, len(rows)))
         col_w = available_w / n
         table_right = left + label_w + available_w
         text_h = max(1.2, min(1.8, col_w * 0.28))
@@ -641,3 +704,37 @@ class DxfExporter:
                 t = (x - x0) / dx
                 return ys[i - 1] + (ys[i] - ys[i - 1]) * t
         return float("nan")
+
+    def _is_valid_point(self, point: tuple[float, float]) -> bool:
+        return len(point) == 2 and math.isfinite(point[0]) and math.isfinite(point[1])
+
+    def _safe_add_polyline(
+        self,
+        msp,
+        points: List[tuple[float, float]],
+        layer: str,
+        section: Optional[SectionData] = None,
+        step: str = "polyline drawing",
+        closed: bool = False,
+    ) -> bool:
+        valid_points = [pt for pt in points if self._is_valid_point(pt)]
+        if len(valid_points) < 2:
+            return False
+        try:
+            msp.add_lwpolyline(valid_points, dxfattribs={"layer": layer, "closed": closed})
+            return True
+        except Exception as exc:
+            self._log_section_exception(section=section, step=step, exc=exc)
+            return False
+
+    def _log_section_exception(self, section: Optional[SectionData], step: str, exc: Exception) -> None:
+        section_index = getattr(section, "index", None)
+        section_id = getattr(section, "id", None)
+        self._logger.error(
+            "Section DXF export failed | section_index=%s | section_id=%s | step=%s | repr=%s\n%s",
+            section_index,
+            section_id,
+            step,
+            repr(exc),
+            traceback.format_exc(),
+        )
