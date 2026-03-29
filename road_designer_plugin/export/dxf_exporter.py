@@ -502,40 +502,22 @@ class DxfExporter:
             return None
         z_min = min(z_vals)
         z_max = max(z_vals)
-
-        side_pad = 8.0
-        top_pad = 4.0
-        bottom_pad = 3.0
-        inter_block_gap = 2.0
-        graph_extra_w = 20.0
-        graph_extra_h = 20.0
-        head_h = 22.0
-        quote_rows = 3
-        quote_text_h = 1.8
-        quote_row_spacing = 1.6
-        table_label_w = 22.0
-        table_text_pad_x = 3.0
-        table_col_min_w = 8.0
-        min_anchor_dx = 2.0
-
-        graph_w = max(120.0, (x_max - x_min) * 1000.0 / section_h_scale + graph_extra_w)
-        graph_h = max(70.0, (z_max - z_min) * 1000.0 / section_h_scale * z_exaggeration + graph_extra_h)
         points = self._build_quote_points(section, quote_step_m)
-        n_points_raw = max(1, len(points))
-        table_data_w_est = max(graph_w - table_label_w - 2.0, table_col_min_w)
-        max_points_by_width = max(1, int(table_data_w_est / table_col_min_w))
-        n_points_reduced = min(n_points_raw, max_points_by_width)
-        max_points_by_anchor = max(1, int(table_data_w_est / min_anchor_dx))
-        n_points_effective = min(n_points_reduced, max_points_by_anchor)
-        values_per_col = max(6, max(len(f"{p['offset']:.2f}") for p in points) + 1) if points else 6
-        column_text_w = values_per_col * quote_text_h * 0.6 + table_text_pad_x
-        table_data_w_min = max(table_col_min_w * n_points_effective, column_text_w * n_points_effective)
-        table_w = table_label_w + 2.0 + table_data_w_min
-        table_row_h = max(quote_text_h + quote_row_spacing, 6.0)
-        table_h = quote_rows * table_row_h
-        cart_content_w = max(graph_w, table_w)
-        cart_w = cart_content_w + 2.0 * side_pad
-        cart_h = top_pad + head_h + inter_block_gap + graph_h + inter_block_gap + table_h + bottom_pad
+        layout = self._build_section_cartiglio_layout_model(
+            x_min=x_min,
+            x_max=x_max,
+            z_min=z_min,
+            z_max=z_max,
+            points=points,
+            section_h_scale=section_h_scale,
+            z_exaggeration=z_exaggeration,
+        )
+        graph_w = layout["graph_w"]
+        graph_h = layout["graph_h"]
+        table_w = layout["table_w"]
+        table_h = layout["table_h"]
+        cart_w = layout["cart_w"]
+        cart_h = layout["cart_h"]
         if not all(math.isfinite(v) and v > 0 for v in (graph_w, graph_h, table_h, table_w, cart_w, cart_h)):
             return None
         return {
@@ -546,7 +528,7 @@ class DxfExporter:
             "z_max": z_max,
             "graph_w": graph_w,
             "graph_h": graph_h,
-            "head_h": head_h,
+            "head_h": layout["head_h"],
             "table_h": table_h,
             "table_w": table_w,
             "cart_w": cart_w,
@@ -554,12 +536,7 @@ class DxfExporter:
             "z_exaggeration": z_exaggeration,
             "section_h_scale": section_h_scale,
             "points": points,
-            "layout": {
-                "side_pad": side_pad,
-                "top_pad": top_pad,
-                "bottom_pad": bottom_pad,
-                "inter_block_gap": inter_block_gap,
-            },
+            "layout": layout,
         }
 
     def _draw_single_section_cartiglio(self, msp, item: dict, x0: float, y0: float, min_width: float) -> None:
@@ -581,16 +558,22 @@ class DxfExporter:
         top_pad = float(layout.get("top_pad", 4.0))
         bottom_pad = float(layout.get("bottom_pad", 3.0))
         inter_block_gap = float(layout.get("inter_block_gap", 2.0))
+        head_h = float(layout.get("head_h", item.get("head_h", 22.0)))
+        graph_extra_bottom = float(layout.get("graph_extra_bottom", 0.0))
+        content_w = float(layout.get("content_w", max(item["graph_w"], item.get("table_w", item["graph_w"]))))
+        table_w = float(layout.get("table_w", item.get("table_w", item["graph_w"])))
+        table_h = float(layout.get("table_h", item["table_h"]))
+        graph_w = float(layout.get("graph_w", item["graph_w"]))
+        graph_h = float(layout.get("graph_h", item["graph_h"]))
 
-        content_w = max(item["graph_w"], item.get("table_w", item["graph_w"]))
         content_left = x0 + side_pad
         content_right = min(x1 - side_pad, content_left + content_w)
         table_bottom = y0 + bottom_pad
-        table_top = table_bottom + item["table_h"]
-        graph_bottom = table_top + inter_block_gap
-        graph_top = y1 - top_pad - item["head_h"] - inter_block_gap
+        table_top = table_bottom + table_h
+        graph_bottom = table_top + inter_block_gap + graph_extra_bottom
+        graph_top = graph_bottom + graph_h
         graph_left = content_left
-        graph_right = min(content_right, graph_left + item["graph_w"])
+        graph_right = min(content_right, graph_left + graph_w)
         self._safe_add_polyline(
             msp,
             [(graph_left, graph_bottom), (graph_right, graph_bottom), (graph_right, graph_top), (graph_left, graph_top), (graph_left, graph_bottom)],
@@ -608,9 +591,12 @@ class DxfExporter:
             f"Scala H 1:{int(item['section_h_scale'])} Vx{item['z_exaggeration']:.2f}"
         )
         current_step = "text drawing"
-        msp.add_text(hdr, dxfattribs={"height": 2.4, "layer": "SEZ_TEXT"}).set_placement((content_left, y1 - top_pad - 3.0))
+        header_y = y1 - top_pad - 3.0
+        msp.add_text(hdr, dxfattribs={"height": 2.4, "layer": "SEZ_TEXT"}).set_placement((content_left, header_y))
         if min_width > 0:
-            msp.add_text(f"Wmin {min_width:.2f}", dxfattribs={"height": 2.0, "layer": "SEZ_TEXT"}).set_placement((x1 - side_pad - 35.0, y1 - top_pad - 8.0))
+            wmin_x = x1 - side_pad - 35.0
+            wmin_y = max(graph_top + 0.8, header_y - 5.0)
+            msp.add_text(f"Wmin {min_width:.2f}", dxfattribs={"height": 2.0, "layer": "SEZ_TEXT"}).set_placement((wmin_x, wmin_y))
 
         x_span = max(1e-6, item["x_max"] - item["x_min"])
         z_span = max(1e-6, item["z_max"] - item["z_min"])
@@ -665,7 +651,7 @@ class DxfExporter:
             msp.add_line((ax0, ay0), (ax0, ay1), dxfattribs={"layer": "SEZ_AXIS"})
 
         table_left = content_left
-        table_right = min(content_right, table_left + item.get("table_w", item["graph_w"]))
+        table_right = min(content_right, table_left + table_w)
         current_step = "table drawing"
         table_data = self._draw_section_table(
             msp,
@@ -699,6 +685,71 @@ class DxfExporter:
                     section=sec,
                     step=current_step,
                 )
+
+    def _build_section_cartiglio_layout_model(
+        self,
+        x_min: float,
+        x_max: float,
+        z_min: float,
+        z_max: float,
+        points: List[dict],
+        section_h_scale: float,
+        z_exaggeration: float,
+    ) -> dict:
+        side_pad = 8.0
+        top_pad = 4.0
+        bottom_pad = 3.0
+        inter_block_gap = 2.0
+        graph_extra_w = 20.0
+        graph_extra_h = 20.0
+        graph_extra_bottom = 2.0
+        head_h = 22.0
+        quote_rows = 3
+        table_label_w = 22.0
+        table_col_min_w = 8.0
+        table_border_pad = 2.0
+        min_anchor_dx = 2.0
+
+        graph_w = max(120.0, (x_max - x_min) * 1000.0 / section_h_scale + graph_extra_w)
+        graph_h = max(70.0, (z_max - z_min) * 1000.0 / section_h_scale * z_exaggeration + graph_extra_h)
+        table_row_h = 6.0
+        table_h = quote_rows * table_row_h
+
+        # Ensure table width is not underestimated: include all effective quote columns
+        # and the minimum spacing actually enforced by table anchor compaction.
+        n_points_raw = max(1, len(points))
+        n_points_anchor = max(1, int(max(graph_w, table_col_min_w) / min_anchor_dx))
+        n_points_effective = min(n_points_raw, n_points_anchor)
+        table_data_w = max(table_col_min_w * n_points_effective, graph_w)
+        table_w = table_label_w + table_border_pad + table_data_w
+
+        content_w = max(graph_w, table_w)
+        cart_w = content_w + 2.0 * side_pad
+        cart_h = (
+            top_pad
+            + head_h
+            + inter_block_gap
+            + graph_h
+            + graph_extra_bottom
+            + inter_block_gap
+            + table_h
+            + bottom_pad
+        )
+        return {
+            "side_pad": side_pad,
+            "top_pad": top_pad,
+            "bottom_pad": bottom_pad,
+            "inter_block_gap": inter_block_gap,
+            "head_h": head_h,
+            "graph_extra_bottom": graph_extra_bottom,
+            "graph_w": graph_w,
+            "graph_h": graph_h,
+            "table_h": table_h,
+            "table_w": table_w,
+            "content_w": content_w,
+            "cart_w": cart_w,
+            "cart_h": cart_h,
+        }
 
     def _draw_section_table(self, msp, points: List[dict], left: float, right: float, top: float, bottom: float, x_mapper) -> dict:
         rows = ["OFFSET", "TERRENO", "PROGETTO"]
