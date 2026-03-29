@@ -853,26 +853,26 @@ class DxfExporter:
             msp.add_line((x, top), (x, bottom), dxfattribs={"layer": "SEZ_TABLE"})
 
         for p in anchors:
-    x = p["x"]
-    point_positions.append({"offset": p["offset"], "x": x})
-    vals = [
-        f"{p['offset']:.2f}",
-        f"{p['terrain_z']:.2f}" if math.isfinite(p["terrain_z"]) else "-",
-        f"{p['project_z']:.2f}" if math.isfinite(p["project_z"]) else "-",
-    ]
-    for ridx, val in enumerate(vals):
-        y = top - (ridx + 0.7) * row_h
-        try:
-            txt = msp.add_text(val, dxfattribs={"height": text_h, "layer": "SEZ_TEXT"})
-            # Niente allineamento "MIDDLE_CENTER": in alcuni casi il testo
-            # finisce fuori posizione o non risulta visibile.
-            # Lo posizioniamo manualmente con un piccolo offset.
-            txt.set_placement((x - text_h * 0.9, y))
-        except Exception:
-            # fallback silenzioso: non bloccare la tabella per un singolo testo
-            pass
+            x = p["x"]
+            point_positions.append({"offset": p["offset"], "x": x})
+            vals = [
+                f"{p['offset']:.2f}",
+                f"{p['terrain_z']:.2f}" if math.isfinite(p["terrain_z"]) else "-",
+                f"{p['project_z']:.2f}" if math.isfinite(p["project_z"]) else "-",
+            ]
+            for ridx, val in enumerate(vals):
+                y = top - (ridx + 0.7) * row_h
+                try:
+                    txt = msp.add_text(val, dxfattribs={"height": text_h, "layer": "SEZ_TEXT"})
+                    # Niente allineamento "MIDDLE_CENTER": in alcuni casi il testo
+                    # finisce fuori posizione o non risulta visibile.
+                    # Lo posizioniamo manualmente con un piccolo offset.
+                    txt.set_placement((x - text_h * 0.9, y))
+                except Exception:
+                    # fallback silenzioso: non bloccare la tabella per un singolo testo
+                    pass
 
-return {"points": point_positions}
+        return {"points": point_positions}
 
     def _reduce_quote_points_for_width(self, points: List[dict], available_w: float) -> List[dict]:
         if not points:
