@@ -402,6 +402,7 @@ class DxfExporter:
         col_x = usable_left
         y_cursor = usable_top
         col_width = 0.0
+        prev_bounds_in_column: Optional[tuple[float, float, float, float]] = None
 
         for item in prepared:
             w = item["cart_w"]
@@ -422,6 +423,7 @@ class DxfExporter:
                 col_x += col_width + col_gap
                 y_cursor = usable_top
                 col_width = 0.0
+                prev_bounds_in_column = None
 
             if col_x + w > usable_right:
                 sheet_idx += 1
@@ -429,12 +431,46 @@ class DxfExporter:
                 current_origin_x = sheet_origin(sheet_idx)
                 usable_left = current_origin_x + sheet.inner_left + content_pad
                 usable_right = current_origin_x + sheet.inner_left + sheet.usable_width - content_pad
+                usable_top = sheet.inner_bottom + sheet.inner_height - content_pad
+                usable_bottom = sheet.inner_bottom + content_pad
+                usable_height = usable_top - usable_bottom
                 col_x = usable_left
                 y_cursor = usable_top
                 col_width = 0.0
+                prev_bounds_in_column = None
 
             x0 = col_x
             y0 = y_cursor - h
+            bounds = (x0, y0, x0 + w, y0 + h)
+            if prev_bounds_in_column is not None:
+                px0, py0, px1, py1 = prev_bounds_in_column
+                intersects_prev = not (bounds[2] <= px0 or bounds[0] >= px1 or bounds[3] <= py0 or bounds[1] >= py1)
+                if intersects_prev:
+                    self._logger.warning(
+                        "Section cartiglio overlap candidate in same column | section=%s | current=(%.2f, %.2f, %.2f, %.2f) | prev=(%.2f, %.2f, %.2f, %.2f)",
+                        getattr(sec, "index", None),
+                        bounds[0],
+                        bounds[1],
+                        bounds[2],
+                        bounds[3],
+                        px0,
+                        py0,
+                        px1,
+                        py1,
+                    )
+            if bounds[0] < usable_left or bounds[2] > usable_right or bounds[1] < usable_bottom or bounds[3] > usable_top:
+                self._logger.warning(
+                    "Section cartiglio outside usable area | section=%s | bounds=(%.2f, %.2f, %.2f, %.2f) | usable=(%.2f, %.2f, %.2f, %.2f)",
+                    getattr(sec, "index", None),
+                    bounds[0],
+                    bounds[1],
+                    bounds[2],
+                    bounds[3],
+                    usable_left,
+                    usable_bottom,
+                    usable_right,
+                    usable_top,
+                )
             try:
                 self._draw_single_section_cartiglio(msp, item, x0, y0, min_width)
             except Exception as exc:
@@ -449,6 +485,7 @@ class DxfExporter:
                 continue
             y_cursor = y0 - row_gap
             col_width = max(col_width, w)
+            prev_bounds_in_column = bounds
 
     def _prepare_section_layout(
         self, section: SectionData, quote_step_m: float, z_exaggeration: float, section_h_scale: float
@@ -466,15 +503,41 @@ class DxfExporter:
         z_min = min(z_vals)
         z_max = max(z_vals)
 
-        graph_w = max(120.0, (x_max - x_min) * 1000.0 / section_h_scale + 20.0)
-        graph_h = max(70.0, (z_max - z_min) * 1000.0 / section_h_scale * z_exaggeration + 20.0)
+        side_pad = 8.0
+        top_pad = 4.0
+        bottom_pad = 3.0
+        inter_block_gap = 2.0
+        graph_extra_w = 20.0
+        graph_extra_h = 20.0
         head_h = 22.0
-        table_h = 44.0
-        cart_w = graph_w + 16.0
-        cart_h = head_h + graph_h + table_h + 12.0
-        if not all(math.isfinite(v) and v > 0 for v in (graph_w, graph_h, cart_w, cart_h)):
-            return None
+        quote_rows = 3
+        quote_text_h = 1.8
+        quote_row_spacing = 1.6
+        table_label_w = 22.0
+        table_text_pad_x = 3.0
+        table_col_min_w = 8.0
+        min_anchor_dx = 2.0
+
+        graph_w = max(120.0, (x_max - x_min) * 1000.0 / section_h_scale + graph_extra_w)
+        graph_h = max(70.0, (z_max - z_min) * 1000.0 / section_h_scale * z_exaggeration + graph_extra_h)
         points = self._build_quote_points(section, quote_step_m)
+        n_points_raw = max(1, len(points))
+        table_data_w_est = max(graph_w - table_label_w - 2.0, table_col_min_w)
+        max_points_by_width = max(1, int(table_data_w_est / table_col_min_w))
+        n_points_reduced = min(n_points_raw, max_points_by_width)
+        max_points_by_anchor = max(1, int(table_data_w_est / min_anchor_dx))
+        n_points_effective = min(n_points_reduced, max_points_by_anchor)
+        values_per_col = max(6, max(len(f"{p['offset']:.2f}") for p in points) + 1) if points else 6
+        column_text_w = values_per_col * quote_text_h * 0.6 + table_text_pad_x
+        table_data_w_min = max(table_col_min_w * n_points_effective, column_text_w * n_points_effective)
+        table_w = table_label_w + 2.0 + table_data_w_min
+        table_row_h = max(quote_text_h + quote_row_spacing, 6.0)
+        table_h = quote_rows * table_row_h
+        cart_content_w = max(graph_w, table_w)
+        cart_w = cart_content_w + 2.0 * side_pad
+        cart_h = top_pad + head_h + inter_block_gap + graph_h + inter_block_gap + table_h + bottom_pad
+        if not all(math.isfinite(v) and v > 0 for v in (graph_w, graph_h, table_h, table_w, cart_w, cart_h)):
+            return None
         return {
             "section": section,
             "x_min": x_min,
@@ -485,11 +548,18 @@ class DxfExporter:
             "graph_h": graph_h,
             "head_h": head_h,
             "table_h": table_h,
+            "table_w": table_w,
             "cart_w": cart_w,
             "cart_h": cart_h,
             "z_exaggeration": z_exaggeration,
             "section_h_scale": section_h_scale,
             "points": points,
+            "layout": {
+                "side_pad": side_pad,
+                "top_pad": top_pad,
+                "bottom_pad": bottom_pad,
+                "inter_block_gap": inter_block_gap,
+            },
         }
 
     def _draw_single_section_cartiglio(self, msp, item: dict, x0: float, y0: float, min_width: float) -> None:
@@ -506,10 +576,21 @@ class DxfExporter:
             step=current_step,
         )
 
-        graph_left = x0 + 8.0
-        graph_right = x1 - 8.0
-        graph_bottom = y0 + item["table_h"] + 6.0
-        graph_top = y1 - item["head_h"] - 4.0
+        layout = item.get("layout", {})
+        side_pad = float(layout.get("side_pad", 8.0))
+        top_pad = float(layout.get("top_pad", 4.0))
+        bottom_pad = float(layout.get("bottom_pad", 3.0))
+        inter_block_gap = float(layout.get("inter_block_gap", 2.0))
+
+        content_w = max(item["graph_w"], item.get("table_w", item["graph_w"]))
+        content_left = x0 + side_pad
+        content_right = min(x1 - side_pad, content_left + content_w)
+        table_bottom = y0 + bottom_pad
+        table_top = table_bottom + item["table_h"]
+        graph_bottom = table_top + inter_block_gap
+        graph_top = y1 - top_pad - item["head_h"] - inter_block_gap
+        graph_left = content_left
+        graph_right = min(content_right, graph_left + item["graph_w"])
         self._safe_add_polyline(
             msp,
             [(graph_left, graph_bottom), (graph_right, graph_bottom), (graph_right, graph_top), (graph_left, graph_top), (graph_left, graph_bottom)],
@@ -527,9 +608,9 @@ class DxfExporter:
             f"Scala H 1:{int(item['section_h_scale'])} Vx{item['z_exaggeration']:.2f}"
         )
         current_step = "text drawing"
-        msp.add_text(hdr, dxfattribs={"height": 2.4, "layer": "SEZ_TEXT"}).set_placement((x0 + 4.0, y1 - 7.0))
+        msp.add_text(hdr, dxfattribs={"height": 2.4, "layer": "SEZ_TEXT"}).set_placement((content_left, y1 - top_pad - 3.0))
         if min_width > 0:
-            msp.add_text(f"Wmin {min_width:.2f}", dxfattribs={"height": 2.0, "layer": "SEZ_TEXT"}).set_placement((x1 - 35.0, y1 - 12.0))
+            msp.add_text(f"Wmin {min_width:.2f}", dxfattribs={"height": 2.0, "layer": "SEZ_TEXT"}).set_placement((x1 - side_pad - 35.0, y1 - top_pad - 8.0))
 
         x_span = max(1e-6, item["x_max"] - item["x_min"])
         z_span = max(1e-6, item["z_max"] - item["z_min"])
@@ -583,14 +664,14 @@ class DxfExporter:
         if self._is_valid_point((ax0, ay0)) and self._is_valid_point((ax0, ay1)):
             msp.add_line((ax0, ay0), (ax0, ay1), dxfattribs={"layer": "SEZ_AXIS"})
 
-        table_top = y0 + item["table_h"] + 2.0
-        table_bottom = y0 + 3.0
+        table_left = content_left
+        table_right = min(content_right, table_left + item.get("table_w", item["graph_w"]))
         current_step = "table drawing"
         table_data = self._draw_section_table(
             msp,
             item["points"],
-            x0 + 8.0,
-            x1 - 8.0,
+            table_left,
+            table_right,
             table_top,
             table_bottom,
             x_mapper=lambda off: map_pt(off, item["z_min"])[0],
