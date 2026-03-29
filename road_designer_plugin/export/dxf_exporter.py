@@ -131,26 +131,44 @@ class DxfExporter:
         sheet = SheetSpec()
         profile_sheet_count = 0
         if profile and profile.progressive:
-            profile_sheet_count = self._draw_profile_sheets(
-                msp,
-                sheet,
-                profile,
-                sections,
-                profile_h_scale=max(1.0, profile_h_scale),
-                profile_v_scale=max(1.0, profile_v_scale),
-            )
+            try:
+                profile_sheet_count = self._draw_profile_sheets(
+                    msp,
+                    sheet,
+                    profile,
+                    sections,
+                    profile_h_scale=max(1.0, profile_h_scale),
+                    profile_v_scale=max(1.0, profile_v_scale),
+                )
+            except Exception as exc:
+                self._log_export_exception(
+                    phase="draw_profile_sheets",
+                    sheet_type="profile",
+                    sheet_index=None,
+                    section=None,
+                    exc=exc,
+                )
 
         section_origin_x = profile_sheet_count * (sheet.width + self.SHEET_GAP)
-        self._draw_section_sheets(
-            msp,
-            sheet,
-            sections,
-            section_origin_x,
-            quote_step_m=max(0.1, quote_step_m),
-            z_exaggeration=max(0.01, section_z_exaggeration),
-            section_h_scale=max(1.0, section_h_scale),
-            min_width=min_width,
-        )
+        try:
+            self._draw_section_sheets(
+                msp,
+                sheet,
+                sections,
+                section_origin_x,
+                quote_step_m=max(0.1, quote_step_m),
+                z_exaggeration=max(0.01, section_z_exaggeration),
+                section_h_scale=max(1.0, section_h_scale),
+                min_width=min_width,
+            )
+        except Exception as exc:
+            self._log_export_exception(
+                phase="draw_section_sheets",
+                sheet_type="sections",
+                sheet_index=None,
+                section=None,
+                exc=exc,
+            )
 
         out = Path(path)
         out.parent.mkdir(parents=True, exist_ok=True)
@@ -205,9 +223,9 @@ class DxfExporter:
             (band_left, base_y + sheet.inner_bottom + sheet.inner_height),
             (band_left, base_y + sheet.inner_bottom),
         ]
-        msp.add_lwpolyline(outer, dxfattribs={"layer": layer, "closed": True})
-        msp.add_lwpolyline(inner, dxfattribs={"layer": layer, "closed": True})
-        msp.add_lwpolyline(band, dxfattribs={"layer": layer, "closed": True})
+        msp.add_lwpolyline(outer, close=True, dxfattribs={"layer": layer})
+        msp.add_lwpolyline(inner, close=True, dxfattribs={"layer": layer})
+        msp.add_lwpolyline(band, close=True, dxfattribs={"layer": layer})
 
     def _draw_profile_sheets(
         self,
@@ -272,7 +290,8 @@ class DxfExporter:
                 msp.add_lwpolyline(proj_pts, dxfattribs={"layer": "PROF_PROJECT"})
             msp.add_lwpolyline(
                 [(graph_left, graph_bottom), (graph_right, graph_bottom), (graph_right, graph_top), (graph_left, graph_top), (graph_left, graph_bottom)],
-                dxfattribs={"layer": "PROF_FRAME", "closed": True},
+                close=True,
+                dxfattribs={"layer": "PROF_FRAME"},
             )
             if clipped_profile:
                 msp.add_text(
@@ -315,7 +334,8 @@ class DxfExporter:
         table_right = right
         msp.add_lwpolyline(
             [(table_left, top), (table_right, top), (table_right, bottom), (table_left, bottom), (table_left, top)],
-            dxfattribs={"layer": "PROF_TABLE", "closed": True},
+            close=True,
+            dxfattribs={"layer": "PROF_TABLE"},
         )
         msp.add_line((col_left, top), (col_left, bottom), dxfattribs={"layer": "PROF_TABLE"})
         for ridx in range(1, len(rows)):
@@ -401,6 +421,9 @@ class DxfExporter:
                 self._log_section_exception(
                     section=sec,
                     step="section_cartiglio",
+                    phase="draw_section_sheet",
+                    sheet_type="sections",
+                    sheet_index=sheet_idx,
                     exc=exc,
                 )
                 continue
@@ -583,7 +606,8 @@ class DxfExporter:
 
         msp.add_lwpolyline(
             [(left, top), (table_right, top), (table_right, bottom), (left, bottom), (left, top)],
-            dxfattribs={"layer": "SEZ_TABLE", "closed": True},
+            close=True,
+            dxfattribs={"layer": "SEZ_TABLE"},
         )
         msp.add_line((left + label_w, top), (left + label_w, bottom), dxfattribs={"layer": "SEZ_TABLE"})
         for ridx in range(1, len(rows)):
@@ -721,20 +745,46 @@ class DxfExporter:
         if len(valid_points) < 2:
             return False
         try:
-            msp.add_lwpolyline(valid_points, dxfattribs={"layer": layer, "closed": closed})
+            msp.add_lwpolyline(valid_points, close=closed, dxfattribs={"layer": layer})
             return True
         except Exception as exc:
             self._log_section_exception(section=section, step=step, exc=exc)
             return False
 
-    def _log_section_exception(self, section: Optional[SectionData], step: str, exc: Exception) -> None:
+    def _log_export_exception(
+        self,
+        phase: str,
+        sheet_type: str,
+        sheet_index: Optional[int],
+        section: Optional[SectionData],
+        exc: Exception,
+    ) -> None:
         section_index = getattr(section, "index", None)
         section_id = getattr(section, "id", None)
         self._logger.error(
-            "Section DXF export failed | section_index=%s | section_id=%s | step=%s | repr=%s\n%s",
+            "DXF export error | phase=%s | sheet_type=%s | sheet_index=%s | section_index=%s | section_id=%s | repr=%s\n%s",
+            phase,
+            sheet_type,
+            sheet_index,
             section_index,
             section_id,
-            step,
             repr(exc),
             traceback.format_exc(),
+        )
+
+    def _log_section_exception(
+        self,
+        section: Optional[SectionData],
+        step: str,
+        exc: Exception,
+        phase: str = "draw_section",
+        sheet_type: str = "sections",
+        sheet_index: Optional[int] = None,
+    ) -> None:
+        self._log_export_exception(
+            phase=f"{phase}:{step}",
+            sheet_type=sheet_type,
+            sheet_index=sheet_index,
+            section=section,
+            exc=exc,
         )

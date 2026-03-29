@@ -14,13 +14,17 @@ from qgis.core import (
     QgsVectorLayer,
     QgsWkbTypes,
 )
-from qgis.PyQt.QtCore import QVariant
+from qgis.PyQt.QtCore import QMetaType
 
 from ..core.alignment import Alignment
 from ..core.models import SectionData
 
 
 class VectorExporter:
+    def _field(self, name: str, field_type, type_name: str = "", length: int = 0, precision: int = 0) -> QgsField:
+        # QGIS >= 3.40: prefer QMetaType-based constructor to avoid QVariant deprecation warnings.
+        return QgsField(name=name, type=field_type, typeName=type_name, len=length, prec=precision)
+
     def export_outputs(
         self,
         alignment: Alignment,
@@ -69,9 +73,9 @@ class VectorExporter:
         layer = QgsVectorLayer(f"LineString?crs={crs_authid}", name, "memory")
         pr = layer.dataProvider()
         fields = QgsFields()
-        fields.append(QgsField("id", QVariant.Int))
-        fields.append(QgsField("length_m", QVariant.Double, "double", 18, 3))
-        fields.append(QgsField("sample_count", QVariant.Int))
+        fields.append(self._field("id", QMetaType.Type.Int))
+        fields.append(self._field("length_m", QMetaType.Type.Double, "double", 18, 3))
+        fields.append(self._field("sample_count", QMetaType.Type.Int))
         pr.addAttributes(fields)
         layer.updateFields()
 
@@ -86,15 +90,15 @@ class VectorExporter:
         layer = QgsVectorLayer(f"LineString?crs={crs_authid}", name, "memory")
         pr = layer.dataProvider()
         fields = QgsFields()
-        fields.append(QgsField("section_id", QVariant.Int))
-        fields.append(QgsField("progressive", QVariant.Double, "double", 18, 3))
-        fields.append(QgsField("width_left", QVariant.Double, "double", 18, 3))
-        fields.append(QgsField("width_right", QVariant.Double, "double", 18, 3))
-        fields.append(QgsField("total_width", QVariant.Double, "double", 18, 3))
-        fields.append(QgsField("area_cut", QVariant.Double, "double", 18, 3))
-        fields.append(QgsField("area_fill", QVariant.Double, "double", 18, 3))
-        fields.append(QgsField("approx_flg", QVariant.Int))
-        fields.append(QgsField("note", QVariant.String, "string", 254))
+        fields.append(self._field("section_id", QMetaType.Type.Int))
+        fields.append(self._field("progressive", QMetaType.Type.Double, "double", 18, 3))
+        fields.append(self._field("width_left", QMetaType.Type.Double, "double", 18, 3))
+        fields.append(self._field("width_right", QMetaType.Type.Double, "double", 18, 3))
+        fields.append(self._field("total_width", QMetaType.Type.Double, "double", 18, 3))
+        fields.append(self._field("area_cut", QMetaType.Type.Double, "double", 18, 3))
+        fields.append(self._field("area_fill", QMetaType.Type.Double, "double", 18, 3))
+        fields.append(self._field("approx_flg", QMetaType.Type.Int))
+        fields.append(self._field("note", QMetaType.Type.QString, "string", 254))
         pr.addAttributes(fields)
         layer.updateFields()
 
@@ -144,10 +148,10 @@ class VectorExporter:
         layer = QgsVectorLayer(f"Polygon?crs={crs_authid}", name, "memory")
         pr = layer.dataProvider()
         fields = QgsFields()
-        fields.append(QgsField("id", QVariant.Int))
-        fields.append(QgsField("length_m", QVariant.Double, "double", 18, 3))
-        fields.append(QgsField("source_nm", QVariant.String, "string", 120))
-        fields.append(QgsField("note", QVariant.String, "string", 254))
+        fields.append(self._field("id", QMetaType.Type.Int))
+        fields.append(self._field("length_m", QMetaType.Type.Double, "double", 18, 3))
+        fields.append(self._field("source_nm", QMetaType.Type.QString, "string", 120))
+        fields.append(self._field("note", QMetaType.Type.QString, "string", 254))
         pr.addAttributes(fields)
         layer.updateFields()
 
@@ -202,10 +206,10 @@ class VectorExporter:
         layer = QgsVectorLayer(f"LineString?crs={crs_authid}", name, "memory")
         pr = layer.dataProvider()
         fields = QgsFields()
-        fields.append(QgsField("section_id", QVariant.Int))
-        fields.append(QgsField("side", QVariant.String, "string", 8))
-        fields.append(QgsField("approx_flg", QVariant.Int))
-        fields.append(QgsField("note", QVariant.String, "string", 254))
+        fields.append(self._field("section_id", QMetaType.Type.Int))
+        fields.append(self._field("side", QMetaType.Type.QString, "string", 8))
+        fields.append(self._field("approx_flg", QMetaType.Type.Int))
+        fields.append(self._field("note", QMetaType.Type.QString, "string", 254))
         pr.addAttributes(fields)
         layer.updateFields()
 
