@@ -244,7 +244,6 @@ class DxfExporter:
         sheet_count = max(1, int(math.ceil(total_span / span_per_sheet)))
 
         min_z = min([z for z in profile.terrain_z + profile.project_z if math.isfinite(z)] or [0.0])
-        max_z = max([z for z in profile.terrain_z + profile.project_z if math.isfinite(z)] or [1.0])
 
         for idx in range(sheet_count):
             base_x = idx * (sheet.width + self.SHEET_GAP)
@@ -372,13 +371,15 @@ class DxfExporter:
     ) -> None:
         if not sections:
             return
+
         prepared = [self._prepare_section_layout(s, quote_step_m, z_exaggeration, section_h_scale) for s in sections]
         prepared = [p for p in prepared if p]
         if not prepared:
             return
-        content_pad = 10.0
-        row_gap = 10.0
-        col_gap = 12.0
+
+        content_pad = 12.0
+        row_gap = 18.0
+        col_gap = 18.0
         sheet_idx = 0
 
         def sheet_origin(idx: int) -> float:
@@ -392,62 +393,81 @@ class DxfExporter:
                 (current_origin_x + sheet.inner_left + 12.0, sheet.height - sheet.margin - 6.0)
             )
 
+        def reset_sheet_state(idx: int):
+            current_origin_x = sheet_origin(idx)
+            usable_left = current_origin_x + sheet.inner_left + content_pad
+            usable_right = current_origin_x + sheet.inner_left + sheet.usable_width - content_pad
+            usable_top = sheet.inner_bottom + sheet.inner_height - content_pad - 12.0
+            usable_bottom = sheet.inner_bottom + content_pad
+            usable_height = usable_top - usable_bottom
+            return {
+                "current_origin_x": current_origin_x,
+                "usable_left": usable_left,
+                "usable_right": usable_right,
+                "usable_top": usable_top,
+                "usable_bottom": usable_bottom,
+                "usable_height": usable_height,
+                "col_x": usable_left,
+                "y_cursor": usable_top,
+                "col_width": 0.0,
+                "prev_bounds_in_column": None,
+            }
+
         draw_sheet(sheet_idx)
-        current_origin_x = sheet_origin(sheet_idx)
-        usable_left = current_origin_x + sheet.inner_left + content_pad
-        usable_right = current_origin_x + sheet.inner_left + sheet.usable_width - content_pad
-        usable_top = sheet.inner_bottom + sheet.inner_height - content_pad
-        usable_bottom = sheet.inner_bottom + content_pad
-        usable_height = usable_top - usable_bottom
-        col_x = usable_left
-        y_cursor = usable_top
-        col_width = 0.0
-        prev_bounds_in_column: Optional[tuple[float, float, float, float]] = None
+        state = reset_sheet_state(sheet_idx)
 
         for item in prepared:
+            sec = item.get("section")
             w = item["cart_w"]
             h = item["cart_h"]
-            sec = item.get("section")
-            if w > (usable_right - usable_left) or h > usable_height:
+
+            if w > (state["usable_right"] - state["usable_left"]) or h > state["usable_height"]:
                 self._logger.warning(
                     "Section cartiglio too large for usable A0 area | section=%s | size=(%.2f, %.2f) | usable=(%.2f, %.2f)",
                     getattr(sec, "index", None),
                     w,
                     h,
-                    usable_right - usable_left,
-                    usable_height,
+                    state["usable_right"] - state["usable_left"],
+                    state["usable_height"],
                 )
                 continue
 
-            if y_cursor - h < usable_bottom:
-                col_x += col_width + col_gap
-                y_cursor = usable_top
-                col_width = 0.0
-                prev_bounds_in_column = None
+            placed = False
+            safety = 0
 
-            if col_x + w > usable_right:
-                sheet_idx += 1
-                draw_sheet(sheet_idx)
-                current_origin_x = sheet_origin(sheet_idx)
-                usable_left = current_origin_x + sheet.inner_left + content_pad
-                usable_right = current_origin_x + sheet.inner_left + sheet.usable_width - content_pad
-                usable_top = sheet.inner_bottom + sheet.inner_height - content_pad
-                usable_bottom = sheet.inner_bottom + content_pad
-                usable_height = usable_top - usable_bottom
-                col_x = usable_left
-                y_cursor = usable_top
-                col_width = 0.0
-                prev_bounds_in_column = None
+            while not placed and safety < 20:
+                safety += 1
 
-            x0 = col_x
-            y0 = y_cursor - h
-            bounds = (x0, y0, x0 + w, y0 + h)
-            if prev_bounds_in_column is not None:
-                px0, py0, px1, py1 = prev_bounds_in_column
-                intersects_prev = not (bounds[2] <= px0 or bounds[0] >= px1 or bounds[3] <= py0 or bounds[1] >= py1)
-                if intersects_prev:
+                if state["y_cursor"] - h < state["usable_bottom"]:
+                    state["col_x"] += state["col_width"] + col_gap
+                    state["y_cursor"] = state["usable_top"]
+                    state["col_width"] = 0.0
+                    state["prev_bounds_in_column"] = None
+
+                if state["col_x"] + w > state["usable_right"]:
+                    sheet_idx += 1
+                    draw_sheet(sheet_idx)
+                    state = reset_sheet_state(sheet_idx)
+
+                x0 = state["col_x"]
+                y0 = state["y_cursor"] - h
+                bounds = (x0, y0, x0 + w, y0 + h)
+
+                overlap_prev = False
+                if state["prev_bounds_in_column"] is not None:
+                    px0, py0, px1, py1 = state["prev_bounds_in_column"]
+                    overlap_prev = not (bounds[2] <= px0 or bounds[0] >= px1 or bounds[3] <= py0 or bounds[1] >= py1)
+
+                out_of_bounds = (
+                    bounds[0] < state["usable_left"]
+                    or bounds[2] > state["usable_right"]
+                    or bounds[1] < state["usable_bottom"]
+                    or bounds[3] > state["usable_top"]
+                )
+
+                if overlap_prev:
                     self._logger.warning(
-                        "Section cartiglio overlap candidate in same column | section=%s | current=(%.2f, %.2f, %.2f, %.2f) | prev=(%.2f, %.2f, %.2f, %.2f)",
+                        "Section cartiglio overlap detected before drawing | section=%s | current=(%.2f, %.2f, %.2f, %.2f) | prev=(%.2f, %.2f, %.2f, %.2f)",
                         getattr(sec, "index", None),
                         bounds[0],
                         bounds[1],
@@ -458,34 +478,58 @@ class DxfExporter:
                         px1,
                         py1,
                     )
-            if bounds[0] < usable_left or bounds[2] > usable_right or bounds[1] < usable_bottom or bounds[3] > usable_top:
+                    state["col_x"] += max(state["col_width"], px1 - px0) + col_gap
+                    state["y_cursor"] = state["usable_top"]
+                    state["col_width"] = 0.0
+                    state["prev_bounds_in_column"] = None
+                    continue
+
+                if out_of_bounds:
+                    self._logger.warning(
+                        "Section cartiglio outside usable area before drawing | section=%s | bounds=(%.2f, %.2f, %.2f, %.2f) | usable=(%.2f, %.2f, %.2f, %.2f)",
+                        getattr(sec, "index", None),
+                        bounds[0],
+                        bounds[1],
+                        bounds[2],
+                        bounds[3],
+                        state["usable_left"],
+                        state["usable_bottom"],
+                        state["usable_right"],
+                        state["usable_top"],
+                    )
+                    state["col_x"] += state["col_width"] + col_gap
+                    state["y_cursor"] = state["usable_top"]
+                    state["col_width"] = 0.0
+                    state["prev_bounds_in_column"] = None
+                    continue
+
+                # FIX PRINCIPALE:
+                # consumiamo subito lo slot di layout, anche se il disegno
+                # del cartiglio dovesse andare in errore parziale.
+                # Così il cartiglio successivo non riparte mai dallo stesso punto.
+                state["y_cursor"] = y0 - row_gap
+                state["col_width"] = max(state["col_width"], w)
+                state["prev_bounds_in_column"] = bounds
+                placed = True
+
+                try:
+                    self._draw_single_section_cartiglio(msp, item, x0, y0, min_width)
+                except Exception as exc:
+                    self._log_section_exception(
+                        section=sec,
+                        step="section_cartiglio",
+                        phase="draw_section_sheet",
+                        sheet_type="sections",
+                        sheet_index=sheet_idx,
+                        exc=exc,
+                    )
+                    # non annullare il posizionamento
+
+            if not placed:
                 self._logger.warning(
-                    "Section cartiglio outside usable area | section=%s | bounds=(%.2f, %.2f, %.2f, %.2f) | usable=(%.2f, %.2f, %.2f, %.2f)",
+                    "Unable to place section cartiglio after layout retries | section=%s",
                     getattr(sec, "index", None),
-                    bounds[0],
-                    bounds[1],
-                    bounds[2],
-                    bounds[3],
-                    usable_left,
-                    usable_bottom,
-                    usable_right,
-                    usable_top,
                 )
-            try:
-                self._draw_single_section_cartiglio(msp, item, x0, y0, min_width)
-            except Exception as exc:
-                self._log_section_exception(
-                    section=sec,
-                    step="section_cartiglio",
-                    phase="draw_section_sheet",
-                    sheet_type="sections",
-                    sheet_index=sheet_idx,
-                    exc=exc,
-                )
-                continue
-            y_cursor = y0 - row_gap
-            col_width = max(col_width, w)
-            prev_bounds_in_column = bounds
 
     def _prepare_section_layout(
         self, section: SectionData, quote_step_m: float, z_exaggeration: float, section_h_scale: float
@@ -554,12 +598,11 @@ class DxfExporter:
         )
 
         layout = item.get("layout", {})
-        side_pad = float(layout.get("side_pad", 8.0))
-        top_pad = float(layout.get("top_pad", 4.0))
-        bottom_pad = float(layout.get("bottom_pad", 3.0))
-        inter_block_gap = float(layout.get("inter_block_gap", 2.0))
-        head_h = float(layout.get("head_h", item.get("head_h", 22.0)))
-        graph_extra_bottom = float(layout.get("graph_extra_bottom", 0.0))
+        side_pad = float(layout.get("side_pad", 12.0))
+        top_pad = float(layout.get("top_pad", 8.0))
+        bottom_pad = float(layout.get("bottom_pad", 8.0))
+        inter_block_gap = float(layout.get("inter_block_gap", 6.0))
+        graph_extra_bottom = float(layout.get("graph_extra_bottom", 8.0))
         content_w = float(layout.get("content_w", max(item["graph_w"], item.get("table_w", item["graph_w"]))))
         table_w = float(layout.get("table_w", item.get("table_w", item["graph_w"])))
         table_h = float(layout.get("table_h", item["table_h"]))
@@ -574,6 +617,7 @@ class DxfExporter:
         graph_top = graph_bottom + graph_h
         graph_left = content_left
         graph_right = min(content_right, graph_left + graph_w)
+
         self._safe_add_polyline(
             msp,
             [(graph_left, graph_bottom), (graph_right, graph_bottom), (graph_right, graph_top), (graph_left, graph_top), (graph_left, graph_bottom)],
@@ -593,9 +637,10 @@ class DxfExporter:
         current_step = "text drawing"
         header_y = y1 - top_pad - 3.0
         msp.add_text(hdr, dxfattribs={"height": 2.4, "layer": "SEZ_TEXT"}).set_placement((content_left, header_y))
+
         if min_width > 0:
-            wmin_x = x1 - side_pad - 35.0
-            wmin_y = max(graph_top + 0.8, header_y - 5.0)
+            wmin_x = x1 - side_pad - 42.0
+            wmin_y = max(graph_top + 2.0, header_y - 6.0)
             msp.add_text(f"Wmin {min_width:.2f}", dxfattribs={"height": 2.0, "layer": "SEZ_TEXT"}).set_placement((wmin_x, wmin_y))
 
         x_span = max(1e-6, item["x_max"] - item["x_min"])
@@ -696,32 +741,34 @@ class DxfExporter:
         section_h_scale: float,
         z_exaggeration: float,
     ) -> dict:
-        side_pad = 8.0
-        top_pad = 4.0
-        bottom_pad = 3.0
-        inter_block_gap = 2.0
-        graph_extra_w = 20.0
-        graph_extra_h = 20.0
-        graph_extra_bottom = 2.0
-        head_h = 22.0
+        side_pad = 12.0
+        top_pad = 8.0
+        bottom_pad = 8.0
+        inter_block_gap = 6.0
+        graph_extra_w = 28.0
+        graph_extra_h = 28.0
+        graph_extra_bottom = 8.0
+        head_h = 32.0
+
         quote_rows = 3
-        table_label_w = 22.0
-        table_col_min_w = 8.0
-        table_border_pad = 2.0
-        min_anchor_dx = 2.0
+        table_label_w = 30.0
+        table_col_min_w = 12.0
+        table_border_pad = 4.0
+        min_anchor_dx = 8.0
 
-        graph_w = max(120.0, (x_max - x_min) * 1000.0 / section_h_scale + graph_extra_w)
-        graph_h = max(70.0, (z_max - z_min) * 1000.0 / section_h_scale * z_exaggeration + graph_extra_h)
-        table_row_h = 6.0
-        table_h = quote_rows * table_row_h
+        graph_w = max(140.0, (x_max - x_min) * 1000.0 / section_h_scale + graph_extra_w)
+        graph_h = max(95.0, (z_max - z_min) * 1000.0 / section_h_scale * z_exaggeration + graph_extra_h)
 
-        # Ensure table width is not underestimated: include all effective quote columns
-        # and the minimum spacing actually enforced by table anchor compaction.
+        text_h = 2.0
+        table_row_h = max(8.0, text_h * 3.0)
+        table_h = quote_rows * table_row_h + 10.0
+
         n_points_raw = max(1, len(points))
         n_points_anchor = max(1, int(max(graph_w, table_col_min_w) / min_anchor_dx))
         n_points_effective = min(n_points_raw, n_points_anchor)
+
         table_data_w = max(table_col_min_w * n_points_effective, graph_w)
-        table_w = table_label_w + table_border_pad + table_data_w
+        table_w = table_label_w + table_border_pad + table_data_w + 4.0
 
         content_w = max(graph_w, table_w)
         cart_w = content_w + 2.0 * side_pad
@@ -735,6 +782,10 @@ class DxfExporter:
             + table_h
             + bottom_pad
         )
+
+        cart_w += 8.0
+        cart_h += 12.0
+
         return {
             "side_pad": side_pad,
             "top_pad": top_pad,
@@ -753,7 +804,7 @@ class DxfExporter:
 
     def _draw_section_table(self, msp, points: List[dict], left: float, right: float, top: float, bottom: float, x_mapper) -> dict:
         rows = ["OFFSET", "TERRENO", "PROGETTO"]
-        label_w = 22.0
+        label_w = 30.0
         available_w = max(10.0, right - left - label_w - 2.0)
         if top <= bottom:
             top = bottom + 6.0
@@ -761,10 +812,10 @@ class DxfExporter:
         n = max(1, len(points))
         row_h = max(1e-6, (top - bottom) / max(1, len(rows)))
         table_right = right
-        data_left = left + label_w + 1.0
-        data_right = table_right - 1.0
+        data_left = left + label_w + 1.5
+        data_right = table_right - 1.5
         data_w = max(1e-6, data_right - data_left)
-        text_h = max(1.2, min(1.8, data_w / max(1.0, n) * 0.28))
+        text_h = max(1.6, min(2.2, data_w / max(1.0, n) * 0.28))
 
         msp.add_lwpolyline(
             [(left, top), (table_right, top), (table_right, bottom), (left, bottom), (left, top)],
@@ -778,7 +829,7 @@ class DxfExporter:
 
         for ridx, row in enumerate(rows):
             y = top - (ridx + 0.7) * row_h
-            msp.add_text(row, dxfattribs={"height": text_h, "layer": "SEZ_TEXT"}).set_placement((left + 0.8, y))
+            msp.add_text(row, dxfattribs={"height": text_h, "layer": "SEZ_TEXT"}).set_placement((left + 1.0, y))
 
         point_positions = []
         anchors = []
@@ -787,14 +838,16 @@ class DxfExporter:
             x_anchor = max(data_left, min(data_right, x_anchor))
             anchors.append({"offset": p["offset"], "x": x_anchor, "terrain_z": p["terrain_z"], "project_z": p["project_z"]})
         anchors.sort(key=lambda point: point["x"])
+
         compact: List[dict] = []
-        min_dx = 2.0
+        min_dx = 6.0
         for anchor in anchors:
             if not compact or abs(anchor["x"] - compact[-1]["x"]) >= min_dx:
                 compact.append(anchor)
             elif abs(anchor["offset"]) < abs(compact[-1]["offset"]):
                 compact[-1] = anchor
         anchors = compact
+
         for c in range(1, len(anchors)):
             x = (anchors[c - 1]["x"] + anchors[c]["x"]) / 2.0
             msp.add_line((x, top), (x, bottom), dxfattribs={"layer": "SEZ_TABLE"})
@@ -815,7 +868,7 @@ class DxfExporter:
     def _reduce_quote_points_for_width(self, points: List[dict], available_w: float) -> List[dict]:
         if not points:
             return points
-        min_col_w = 8.0
+        min_col_w = 12.0
         max_points = max(1, int(available_w / min_col_w))
         if len(points) <= max_points:
             return points
