@@ -157,14 +157,17 @@ class RoadDesignerPlugin:
         name = d.project_name.text().strip() or "road_project"
         crs_authid = axis_layer.crs().authid() if axis_layer and axis_layer.crs().isValid() else QgsProject.instance().crs().authid()
 
-        vec_result = VectorExporter().export_outputs(align, sections, folder, name, crs_authid)
-        d.append_log(
-            "Layer QGIS creati: "
-            f"{vec_result['axis_layer_name']}, {vec_result['sections_layer_name']}, "
-            f"{vec_result['slopes_layer_name']}, {vec_result['surface_layer_name']}"
-        )
-        for path in vec_result["saved_paths"]:
-            d.append_log(f"Vettoriale salvato: {path}")
+        try:
+            vec_result = VectorExporter().export_outputs(align, sections, folder, name, crs_authid)
+            d.append_log(
+                "Layer QGIS creati: "
+                f"{vec_result['axis_layer_name']}, {vec_result['sections_layer_name']}, "
+                f"{vec_result['slopes_layer_name']}, {vec_result['surface_layer_name']}"
+            )
+            for path in vec_result["saved_paths"]:
+                d.append_log(f"Vettoriale salvato: {path}")
+        except Exception as exc:
+            d.append_log(f"ERRORE: esportazione vettoriale fallita: {exc!r}")
 
         exp_dxf = DxfExporter()
         if folder and (d.chk_dxf_sections.isChecked() or d.chk_dxf_profile.isChecked()):
@@ -184,12 +187,16 @@ class RoadDesignerPlugin:
                     min_width=d.min_width.value(),
                 )
                 d.append_log(f"DXF layout completo: {p}")
-            except RuntimeError as exc:
+            except Exception as exc:
+                d.append_log(f"ERRORE: esportazione DXF layout fallita: {exc!r}")
                 self._warn(str(exc))
         if folder and d.chk_csv.isChecked():
             p = os.path.join(folder, f"{name}_volumes.csv")
-            TablesExporter().export_volumes_csv(p, vol)
-            d.append_log(f"CSV volumi: {p}")
+            try:
+                TablesExporter().export_volumes_csv(p, vol)
+                d.append_log(f"CSV volumi: {p}")
+            except Exception as exc:
+                d.append_log(f"ERRORE: esportazione CSV fallita: {exc!r}")
 
     def save_json(self):
         d = self.dialog
