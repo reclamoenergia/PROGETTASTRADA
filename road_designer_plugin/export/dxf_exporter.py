@@ -300,7 +300,7 @@ class DxfExporter:
                 ).set_placement((graph_left, graph_bottom - 6.0))
 
             marks = []
-            for sec in [s for s in sections if s_prog <= s.progressive <= e_prog]:
+            for sec in sorted((s for s in sections if s_prog <= s.progressive <= e_prog), key=lambda item: item.progressive):
                 terr = self._interp_piecewise(profile.progressive, profile.terrain_z, sec.progressive)
                 proj = self._interp_piecewise(profile.progressive, profile.project_z, sec.progressive)
                 x, y_terr = map_point(sec.progressive, terr)
@@ -325,7 +325,7 @@ class DxfExporter:
         return sheet_count
 
     def _draw_profile_table(self, msp, marks: List[dict], left: float, right: float, top: float, bottom: float) -> None:
-        rows = ["PROGRESSIVA", "QUOTA TERRENO", "QUOTA PROGETTO"]
+        rows = ["SEZIONE", "PROGRESSIVA", "QUOTA TERRENO", "QUOTA PROGETTO"]
         height = top - bottom
         row_h = height / max(1, len(rows))
         label_w = 45.0
@@ -344,11 +344,7 @@ class DxfExporter:
 
         if marks:
             x_positions = [max(col_left, min(table_right, m["x"])) for m in marks]
-            bounds = [col_left]
-            for i in range(1, len(x_positions)):
-                bounds.append((x_positions[i - 1] + x_positions[i]) / 2.0)
-            bounds.append(table_right)
-            for x in bounds[1:-1]:
+            for x in x_positions:
                 msp.add_line((x, top), (x, bottom), dxfattribs={"layer": "PROF_TABLE"})
 
         for ridx, label in enumerate(rows):
@@ -358,7 +354,7 @@ class DxfExporter:
         for m in marks:
             sec = m["section"]
             x = max(col_left, min(table_right, m["x"]))
-            values = [f"{sec.progressive:.2f}", f"{m['terrain_z']:.2f}", f"{m['project_z']:.2f}"]
+            values = [f"S{sec.index}", f"{sec.progressive:.2f}", f"{m['terrain_z']:.2f}", f"{m['project_z']:.2f}"]
             for ridx, val in enumerate(values):
                 y = top - (ridx + 0.7) * row_h
                 msp.add_text(val, dxfattribs={"height": 2.2, "layer": "PROF_TEXT"}).set_placement((x, y), align="MIDDLE_CENTER")
@@ -380,41 +376,65 @@ class DxfExporter:
         prepared = [p for p in prepared if p]
         if not prepared:
             return
-
+        content_pad = 10.0
+        row_gap = 10.0
+        col_gap = 12.0
         sheet_idx = 0
-        col_x = origin_x + sheet.inner_left + 10.0
-        y_cursor = sheet.height - sheet.margin - 10.0
+
+        def sheet_origin(idx: int) -> float:
+            return origin_x + idx * (sheet.width + self.SHEET_GAP)
+
+        def draw_sheet(idx: int) -> None:
+            current_origin_x = sheet_origin(idx)
+            self._draw_sheet_frame(msp, current_origin_x, 0.0, sheet, "SEZ_FRAME")
+            title = f"Sezioni trasversali | Tavola {idx + 1}"
+            msp.add_text(title, dxfattribs={"height": 6.0, "layer": "SEZ_TEXT"}).set_placement(
+                (current_origin_x + sheet.inner_left + 12.0, sheet.height - sheet.margin - 6.0)
+            )
+
+        draw_sheet(sheet_idx)
+        current_origin_x = sheet_origin(sheet_idx)
+        usable_left = current_origin_x + sheet.inner_left + content_pad
+        usable_right = current_origin_x + sheet.inner_left + sheet.usable_width - content_pad
+        usable_top = sheet.inner_bottom + sheet.inner_height - content_pad
+        usable_bottom = sheet.inner_bottom + content_pad
+        usable_height = usable_top - usable_bottom
+        col_x = usable_left
+        y_cursor = usable_top
         col_width = 0.0
-        frame_drawn_for_sheet: set[int] = set()
 
         for item in prepared:
             w = item["cart_w"]
             h = item["cart_h"]
-
-            if y_cursor - h < sheet.margin + 10.0:
-                col_x += col_width + 12.0
-                y_cursor = sheet.height - sheet.margin - 10.0
-                col_width = 0.0
-
-            max_usable_x = origin_x + sheet.inner_left + sheet.usable_width - 10.0
-            if col_x + w > max_usable_x:
-                sheet_idx += 1
-                origin_x = origin_x + sheet.width + self.SHEET_GAP
-                col_x = origin_x + sheet.inner_left + 10.0
-                y_cursor = sheet.height - sheet.margin - 10.0
-                col_width = 0.0
-
-            if sheet_idx not in frame_drawn_for_sheet:
-                self._draw_sheet_frame(msp, origin_x, 0.0, sheet, "SEZ_FRAME")
-                title = f"Sezioni trasversali | Tavola {sheet_idx + 1}"
-                msp.add_text(title, dxfattribs={"height": 6.0, "layer": "SEZ_TEXT"}).set_placement(
-                    (origin_x + sheet.inner_left + 12.0, sheet.height - sheet.margin - 6.0)
+            sec = item.get("section")
+            if w > (usable_right - usable_left) or h > usable_height:
+                self._logger.warning(
+                    "Section cartiglio too large for usable A0 area | section=%s | size=(%.2f, %.2f) | usable=(%.2f, %.2f)",
+                    getattr(sec, "index", None),
+                    w,
+                    h,
+                    usable_right - usable_left,
+                    usable_height,
                 )
-                frame_drawn_for_sheet.add(sheet_idx)
+                continue
+
+            if y_cursor - h < usable_bottom:
+                col_x += col_width + col_gap
+                y_cursor = usable_top
+                col_width = 0.0
+
+            if col_x + w > usable_right:
+                sheet_idx += 1
+                draw_sheet(sheet_idx)
+                current_origin_x = sheet_origin(sheet_idx)
+                usable_left = current_origin_x + sheet.inner_left + content_pad
+                usable_right = current_origin_x + sheet.inner_left + sheet.usable_width - content_pad
+                col_x = usable_left
+                y_cursor = usable_top
+                col_width = 0.0
 
             x0 = col_x
             y0 = y_cursor - h
-            sec = item.get("section")
             try:
                 self._draw_single_section_cartiglio(msp, item, x0, y0, min_width)
             except Exception as exc:
@@ -427,7 +447,7 @@ class DxfExporter:
                     exc=exc,
                 )
                 continue
-            y_cursor = y0 - 10.0
+            y_cursor = y0 - row_gap
             col_width = max(col_width, w)
 
     def _prepare_section_layout(
@@ -566,7 +586,15 @@ class DxfExporter:
         table_top = y0 + item["table_h"] + 2.0
         table_bottom = y0 + 3.0
         current_step = "table drawing"
-        table_data = self._draw_section_table(msp, item["points"], x0 + 8.0, x1 - 8.0, table_top, table_bottom)
+        table_data = self._draw_section_table(
+            msp,
+            item["points"],
+            x0 + 8.0,
+            x1 - 8.0,
+            table_top,
+            table_bottom,
+            x_mapper=lambda off: map_pt(off, item["z_min"])[0],
+        )
 
         current_step = "quote/candle drawing"
         point_anchor = {round(p["offset"], 6): p["x"] for p in table_data["points"]}
@@ -591,39 +619,56 @@ class DxfExporter:
                     step=current_step,
                 )
 
-    def _draw_section_table(self, msp, points: List[dict], left: float, right: float, top: float, bottom: float) -> dict:
+    def _draw_section_table(self, msp, points: List[dict], left: float, right: float, top: float, bottom: float, x_mapper) -> dict:
         rows = ["OFFSET", "TERRENO", "PROGETTO"]
         label_w = 22.0
-        available_w = max(10.0, right - left - label_w)
+        available_w = max(10.0, right - left - label_w - 2.0)
         if top <= bottom:
             top = bottom + 6.0
         points = self._reduce_quote_points_for_width(points, available_w)
         n = max(1, len(points))
         row_h = max(1e-6, (top - bottom) / max(1, len(rows)))
-        col_w = available_w / n
-        table_right = left + label_w + available_w
-        text_h = max(1.2, min(1.8, col_w * 0.28))
+        table_right = right
+        data_left = left + label_w + 1.0
+        data_right = table_right - 1.0
+        data_w = max(1e-6, data_right - data_left)
+        text_h = max(1.2, min(1.8, data_w / max(1.0, n) * 0.28))
 
         msp.add_lwpolyline(
             [(left, top), (table_right, top), (table_right, bottom), (left, bottom), (left, top)],
             close=True,
             dxfattribs={"layer": "SEZ_TABLE"},
         )
-        msp.add_line((left + label_w, top), (left + label_w, bottom), dxfattribs={"layer": "SEZ_TABLE"})
+        msp.add_line((data_left, top), (data_left, bottom), dxfattribs={"layer": "SEZ_TABLE"})
         for ridx in range(1, len(rows)):
             y = top - ridx * row_h
             msp.add_line((left, y), (table_right, y), dxfattribs={"layer": "SEZ_TABLE"})
-        for c in range(1, n):
-            x = left + label_w + c * col_w
-            msp.add_line((x, top), (x, bottom), dxfattribs={"layer": "SEZ_TABLE"})
 
         for ridx, row in enumerate(rows):
             y = top - (ridx + 0.7) * row_h
             msp.add_text(row, dxfattribs={"height": text_h, "layer": "SEZ_TEXT"}).set_placement((left + 0.8, y))
 
         point_positions = []
-        for cidx, p in enumerate(points):
-            x = left + label_w + (cidx + 0.5) * col_w
+        anchors = []
+        for p in points:
+            x_anchor = float(x_mapper(p["offset"]))
+            x_anchor = max(data_left, min(data_right, x_anchor))
+            anchors.append({"offset": p["offset"], "x": x_anchor, "terrain_z": p["terrain_z"], "project_z": p["project_z"]})
+        anchors.sort(key=lambda point: point["x"])
+        compact: List[dict] = []
+        min_dx = 2.0
+        for anchor in anchors:
+            if not compact or abs(anchor["x"] - compact[-1]["x"]) >= min_dx:
+                compact.append(anchor)
+            elif abs(anchor["offset"]) < abs(compact[-1]["offset"]):
+                compact[-1] = anchor
+        anchors = compact
+        for c in range(1, len(anchors)):
+            x = (anchors[c - 1]["x"] + anchors[c]["x"]) / 2.0
+            msp.add_line((x, top), (x, bottom), dxfattribs={"layer": "SEZ_TABLE"})
+
+        for p in anchors:
+            x = p["x"]
             point_positions.append({"offset": p["offset"], "x": x})
             vals = [
                 f"{p['offset']:.2f}",

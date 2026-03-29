@@ -182,7 +182,7 @@ class RoadDesignerPlugin:
                 exp_dxf.export_all_layout(
                     profile_path,
                     profile=prof_data,
-                    sections=[],
+                    sections=sections,
                     quote_step_m=d.section_quote_step.value(),
                     section_z_exaggeration=d.section_vertical_exaggeration.value(),
                     profile_h_scale=d.profile_h_scale.value(),
