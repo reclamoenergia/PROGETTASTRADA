@@ -567,10 +567,28 @@ class DxfExporter:
         content_right = min(x1 - side_pad, content_left + content_w)
         table_bottom = y0 + bottom_pad
         table_top = table_bottom + table_h
+        min_table_h = 20.0
+        if (table_top - table_bottom) < min_table_h:
+            table_top = table_bottom + min_table_h
         graph_bottom = table_top + inter_block_gap + graph_extra_bottom
         graph_top = graph_bottom + graph_h
+        max_graph_top = y1 - top_pad - layout.get("head_h", item["head_h"]) - inter_block_gap
+        if graph_top > max_graph_top:
+            graph_top = max(graph_bottom + 20.0, max_graph_top)
+        available_graph_h = max(20.0, graph_top - graph_bottom)
+        if abs(available_graph_h - graph_h) > 1e-6:
+            graph_h = available_graph_h
+            graph_top = graph_bottom + graph_h
         graph_left = content_left
         graph_right = min(content_right, graph_left + graph_w)
+        self._logger.debug(
+            "Section cartiglio layout sec=%s table_bottom=%.2f table_top=%.2f graph_bottom=%.2f graph_top=%.2f",
+            sec.index,
+            table_bottom,
+            table_top,
+            graph_bottom,
+            graph_top,
+        )
 
         self._safe_add_polyline(
             msp,
@@ -732,8 +750,8 @@ class DxfExporter:
         graph_h = max(95.0, (z_max - z_min) * 1000.0 / section_h_scale * z_exaggeration + graph_extra_h)
 
         text_h = 2.0
-        table_row_h = max(8.0, text_h * 3.0)
-        table_h = quote_rows * table_row_h + 10.0
+        table_row_h = max(10.0, graph_h * 0.12)
+        table_h = quote_rows * table_row_h + 12.0
 
         n_points_raw = max(1, len(points))
         n_points_anchor = max(1, int(max(graph_w, table_col_min_w) / min_anchor_dx))
@@ -792,12 +810,15 @@ class DxfExporter:
             top = bottom + 6.0
         points = self._reduce_quote_points_for_width(points, available_w)
         n = max(1, len(points))
-        row_h = max(1e-6, (top - bottom) / max(1, len(rows)))
+        row_h = max(6.0, (top - bottom) / max(1, len(rows)))
+        min_table_h = row_h * len(rows)
+        if (top - bottom) < min_table_h:
+            top = bottom + min_table_h
         table_right = right
         data_left = left + label_w + 1.5
         data_right = table_right - 1.5
         data_w = max(1e-6, data_right - data_left)
-        text_h = max(2.0, min(2.6, data_w / max(1.0, n) * 0.28))
+        text_h = max(2.6, min(3.4, row_h * 0.45, data_w / max(1.0, n) * 0.32))
 
         msp.add_lwpolyline(
             [(left, top), (table_right, top), (table_right, bottom), (left, bottom), (left, top)],
