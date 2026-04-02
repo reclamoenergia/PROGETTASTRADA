@@ -27,6 +27,7 @@ class SettingsManager:
         "section_scale",
         "section_vertical_exaggeration",
         "section_quote_step",
+        "pvi_default_curve_length",
     }
 
     def collect_ui_state(self, dialog) -> Dict[str, object]:
@@ -59,6 +60,11 @@ class SettingsManager:
             axis_layer_name=dialog.cmb_axis.currentText(),
             polygon_layer_name=dialog.cmb_polygon.currentText(),
             forced_points_layer_name=dialog.cmb_forced.currentText(),
+            profile_mode=str(dialog.cmb_profile_mode.currentData() or "automatic"),
+            pvi_layer_name=dialog.cmb_pvi_layer.currentText(),
+            pvi_elevation_field=dialog.cmb_pvi_elev_field.currentText(),
+            pvi_curve_length_field=dialog.cmb_pvi_curve_field.currentText(),
+            pvi_default_curve_length=dialog.default_curve_length.value(),
         )
         return settings.to_dict()
 
@@ -92,6 +98,13 @@ class SettingsManager:
         dialog.select_combo_by_text(dialog.cmb_axis, s.axis_layer_name)
         dialog.select_combo_by_text(dialog.cmb_polygon, s.polygon_layer_name)
         dialog.select_combo_by_text(dialog.cmb_forced, s.forced_points_layer_name)
+        idx = dialog.cmb_profile_mode.findData(s.profile_mode)
+        if idx >= 0:
+            dialog.cmb_profile_mode.setCurrentIndex(idx)
+        dialog.select_combo_by_text(dialog.cmb_pvi_layer, s.pvi_layer_name)
+        dialog.select_combo_by_text(dialog.cmb_pvi_elev_field, s.pvi_elevation_field)
+        dialog.select_combo_by_text(dialog.cmb_pvi_curve_field, s.pvi_curve_length_field)
+        dialog.default_curve_length.setValue(float(s.pvi_default_curve_length))
 
     def save_to_json(self, path: str, data: Dict[str, object]) -> None:
         with open(path, "w", encoding="utf-8") as f:
@@ -154,4 +167,8 @@ class SettingsManager:
         pad = float(clean.get("pad_slope_pct", 0.0))
         if abs(pad) > 100:
             raise ValueError("pad_slope_pct non plausibile (|valore| > 100%).")
+
+        pvi_default_curve = float(clean.get("pvi_default_curve_length", 0.0))
+        if pvi_default_curve < 0:
+            raise ValueError("pvi_default_curve_length non può essere negativo.")
         return clean
