@@ -257,29 +257,46 @@ class DxfExporter:
             graph_right = usable_left + sheet.usable_width - 20.0
             table_top = usable_bottom + 140.0
             graph_bottom = table_top + 15.0
-            graph_top = usable_top - 110.0
+            graph_top = usable_top - 90.0
 
             s_prog = p0 + idx * span_per_sheet
             e_prog = min(p1, s_prog + span_per_sheet)
-            title = f"Profilo longitudinale | Tavola {idx + 1}/{sheet_count}"
-            scale_txt = f"Scale H 1:{int(profile_h_scale)}  V 1:{int(profile_v_scale)}"
-            msp.add_text(title, dxfattribs={"height": 6.0, "layer": "PROF_TEXT"}).set_placement((graph_left, usable_top - 20.0))
-            msp.add_text(scale_txt, dxfattribs={"height": 4.0, "layer": "PROF_TEXT"}).set_placement((graph_left, usable_top - 33.0))
-            msp.add_text(f"Prog {s_prog:.2f} - {e_prog:.2f}", dxfattribs={"height": 3.5, "layer": "PROF_TEXT"}).set_placement((graph_left, usable_top - 44.0))
+            title = f"PROFILO LONGITUDINALE - Tavola {idx + 1}/{sheet_count}"
+            scale_txt = f"Scala H 1:{int(profile_h_scale)}   V 1:{int(profile_v_scale)}"
+            msp.add_text(title, dxfattribs={"height": 6.4, "layer": "PROF_TEXT"}).set_placement((graph_left, usable_top - 20.0))
+            msp.add_text(scale_txt, dxfattribs={"height": 3.8, "layer": "PROF_TEXT"}).set_placement((graph_left, usable_top - 33.0))
+            msp.add_text(
+                f"Progressive {s_prog:.2f} - {e_prog:.2f} m",
+                dxfattribs={"height": 3.2, "layer": "PROF_TEXT"},
+            ).set_placement((graph_left, usable_top - 43.0))
 
             gx_span = max(1e-6, e_prog - s_prog)
             vertical_mm_per_m = 1000.0 / max(1.0, profile_v_scale)
-            y_base_ref = min_z
-            clipped_profile = False
+            local_terr = [z for p, z in zip(profile.progressive, profile.terrain_z) if s_prog <= p <= e_prog and math.isfinite(z)]
+            local_proj = [z for p, z in zip(profile.progressive, profile.project_z) if s_prog <= p <= e_prog and math.isfinite(z)]
+            local_z = local_terr + local_proj
+            if local_z:
+                z_min_local = min(local_z)
+                z_max_local = max(local_z)
+            else:
+                z_min_local = min_z
+                z_max_local = min_z + 1.0
+            z_span_local = max(0.5, z_max_local - z_min_local)
+            target_span_m = max(0.5, (graph_top - graph_bottom) / max(1e-6, vertical_mm_per_m))
+            if z_span_local < target_span_m:
+                extra = (target_span_m - z_span_local) * 0.5
+                z_min_map = z_min_local - extra
+                z_max_map = z_max_local + extra
+            else:
+                margin = z_span_local * 0.05
+                z_min_map = z_min_local - margin
+                z_max_map = z_max_local + margin
+            z_map_span = max(1e-6, z_max_map - z_min_map)
 
             def map_point(p: float, z: float) -> tuple[float, float]:
-                nonlocal clipped_profile
                 x = graph_left + (p - s_prog) / gx_span * (graph_right - graph_left)
-                y_raw = graph_bottom + (z - y_base_ref) * vertical_mm_per_m
-                y = max(graph_bottom, min(graph_top, y_raw))
-                if abs(y - y_raw) > 1e-9:
-                    clipped_profile = True
-                return x, y
+                y = graph_bottom + (z - z_min_map) / z_map_span * (graph_top - graph_bottom)
+                return x, max(graph_bottom, min(graph_top, y))
 
             terr_pts = [map_point(p, z) for p, z in zip(profile.progressive, profile.terrain_z) if s_prog <= p <= e_prog]
             proj_pts = [map_point(p, z) for p, z in zip(profile.progressive, profile.project_z) if s_prog <= p <= e_prog]
@@ -292,11 +309,6 @@ class DxfExporter:
                 close=True,
                 dxfattribs={"layer": "PROF_FRAME"},
             )
-            if clipped_profile:
-                msp.add_text(
-                    "ATTENZIONE: profilo ritagliato in verticale (scala V richiesta)",
-                    dxfattribs={"height": 2.2, "layer": "PROF_TEXT"},
-                ).set_placement((graph_left, graph_bottom - 6.0))
 
             marks = []
             for sec in sorted((s for s in sections if s_prog <= s.progressive <= e_prog), key=lambda item: item.progressive):
@@ -315,10 +327,7 @@ class DxfExporter:
                     }
                 )
                 msp.add_line((x, graph_bottom), (x, graph_top), dxfattribs={"layer": "PROF_SECTIONS"})
-                msp.add_text(f"S{sec.index}", dxfattribs={"height": 2.5, "layer": "PROF_TEXT"}).set_placement((x + 1.0, graph_top + 3.0))
-                msp.add_text(f"{sec.progressive:.2f}", dxfattribs={"height": 2.3, "layer": "PROF_TEXT"}).set_placement((x + 1.0, y_proj + 2.5))
-                msp.add_text(f"T {terr:.2f}", dxfattribs={"height": 2.0, "layer": "PROF_TEXT"}).set_placement((x + 1.0, y_terr - 2.5))
-                msp.add_text(f"P {proj:.2f}", dxfattribs={"height": 2.0, "layer": "PROF_TEXT"}).set_placement((x + 1.0, y_proj - 2.5))
+                msp.add_text(f"S{sec.index}", dxfattribs={"height": 2.4, "layer": "PROF_TEXT"}).set_placement((x + 1.0, graph_top + 3.0))
 
             self._draw_profile_table(msp, marks, graph_left, graph_right, table_top, usable_bottom + 20.0)
         return sheet_count
@@ -327,10 +336,11 @@ class DxfExporter:
         rows = ["SEZIONE", "PROGRESSIVA", "QUOTA TERRENO", "QUOTA PROGETTO"]
         height = top - bottom
         row_h = height / max(1, len(rows))
-        label_w = 45.0
+        label_w = 52.0
         table_left = left
         col_left = table_left + label_w
         table_right = right
+        text_h = max(2.1, min(2.8, row_h * 0.36))
         msp.add_lwpolyline(
             [(table_left, top), (table_right, top), (table_right, bottom), (table_left, bottom), (table_left, top)],
             close=True,
@@ -341,22 +351,30 @@ class DxfExporter:
             y = top - ridx * row_h
             msp.add_line((table_left, y), (table_right, y), dxfattribs={"layer": "PROF_TABLE"})
 
-        if marks:
-            x_positions = [max(col_left, min(table_right, m["x"])) for m in marks]
-            for x in x_positions:
+        x_positions = sorted([max(col_left, min(table_right, m["x"])) for m in marks])
+        boundaries = [col_left]
+        if x_positions:
+            boundaries.extend((x_positions[i] + x_positions[i + 1]) * 0.5 for i in range(len(x_positions) - 1))
+            boundaries.append(table_right)
+            for x in boundaries[1:-1]:
                 msp.add_line((x, top), (x, bottom), dxfattribs={"layer": "PROF_TABLE"})
+        else:
+            boundaries.append(table_right)
 
         for ridx, label in enumerate(rows):
-            y = top - (ridx + 0.7) * row_h
-            msp.add_text(label, dxfattribs={"height": 2.2, "layer": "PROF_TEXT"}).set_placement((table_left + 1.5, y))
+            y = top - (ridx + 0.5) * row_h
+            msp.add_text(label, dxfattribs={"height": text_h, "layer": "PROF_TEXT"}).set_placement((table_left + 1.5, y), align="MIDDLE_LEFT")
 
-        for m in marks:
+        for idx, m in enumerate(marks):
             sec = m["section"]
-            x = max(col_left, min(table_right, m["x"]))
+            if idx < len(boundaries) - 1:
+                x = (boundaries[idx] + boundaries[idx + 1]) * 0.5
+            else:
+                x = max(col_left, min(table_right, m["x"]))
             values = [f"S{sec.index}", f"{sec.progressive:.2f}", f"{m['terrain_z']:.2f}", f"{m['project_z']:.2f}"]
             for ridx, val in enumerate(values):
-                y = top - (ridx + 0.7) * row_h
-                msp.add_text(val, dxfattribs={"height": 2.2, "layer": "PROF_TEXT"}).set_placement((x, y), align="MIDDLE_CENTER")
+                y = top - (ridx + 0.5) * row_h
+                msp.add_text(val, dxfattribs={"height": text_h, "layer": "PROF_TEXT"}).set_placement((x, y), align="MIDDLE_CENTER")
 
     def _draw_section_sheets(
         self,
@@ -393,125 +411,65 @@ class DxfExporter:
                 (current_origin_x + sheet.inner_left + 12.0, sheet.height - sheet.margin - 6.0)
             )
 
-        def reset_sheet_state(idx: int):
-            current_origin_x = sheet_origin(idx)
+        avg_w = sum(item["cart_w"] for item in prepared) / max(1, len(prepared))
+        i = 0
+        while i < len(prepared):
+            draw_sheet(sheet_idx)
+            current_origin_x = sheet_origin(sheet_idx)
             usable_left = current_origin_x + sheet.inner_left + content_pad
             usable_right = current_origin_x + sheet.inner_left + sheet.usable_width - content_pad
-            usable_top = sheet.inner_bottom + sheet.inner_height - content_pad - 12.0
+            usable_top = sheet.inner_bottom + sheet.inner_height - content_pad - 16.0
             usable_bottom = sheet.inner_bottom + content_pad
+            usable_width = usable_right - usable_left
             usable_height = usable_top - usable_bottom
-            return {
-                "current_origin_x": current_origin_x,
-                "usable_left": usable_left,
-                "usable_right": usable_right,
-                "usable_top": usable_top,
-                "usable_bottom": usable_bottom,
-                "usable_height": usable_height,
-                "col_x": usable_left,
-                "y_cursor": usable_top,
-                "col_width": 0.0,
-                "prev_bounds_in_column": None,
-            }
+            n_cols = max(1, int(usable_width / max(1.0, avg_w + col_gap)))
+            col_width = usable_width / n_cols
 
-        draw_sheet(sheet_idx)
-        state = reset_sheet_state(sheet_idx)
-
-        for item in prepared:
-            sec = item.get("section")
-            w = item["cart_w"]
-            h = item["cart_h"]
-
-            if w > (state["usable_right"] - state["usable_left"]) or h > state["usable_height"]:
+            row_heights = []
+            current_row_h = 0.0
+            col = 0
+            j = i
+            while j < len(prepared):
+                h = prepared[j]["cart_h"]
+                current_row_h = max(current_row_h, h)
+                col += 1
+                if col == n_cols:
+                    row_heights.append(current_row_h)
+                    current_row_h = 0.0
+                    col = 0
+                req_h = sum(row_heights) + max(0, len(row_heights) - 1) * row_gap
+                req_h += current_row_h
+                req_h += row_gap if current_row_h > 0 and len(row_heights) > 0 else 0.0
+                if req_h > usable_height:
+                    break
+                j += 1
+            if j == i:
                 self._logger.warning(
                     "Section cartiglio too large for usable A0 area | section=%s | size=(%.2f, %.2f) | usable=(%.2f, %.2f)",
-                    getattr(sec, "index", None),
-                    w,
-                    h,
-                    state["usable_right"] - state["usable_left"],
-                    state["usable_height"],
+                    getattr(prepared[i].get("section"), "index", None),
+                    prepared[i]["cart_w"],
+                    prepared[i]["cart_h"],
+                    usable_width,
+                    usable_height,
                 )
+                i += 1
                 continue
 
-            placed = False
-            safety = 0
+            page_items = prepared[i:j]
+            row_max_h = []
+            for start in range(0, len(page_items), n_cols):
+                row_items = page_items[start : start + n_cols]
+                row_max_h.append(max(it["cart_h"] for it in row_items))
 
-            while not placed and safety < 20:
-                safety += 1
-
-                if state["y_cursor"] - h < state["usable_bottom"]:
-                    state["col_x"] += state["col_width"] + col_gap
-                    state["y_cursor"] = state["usable_top"]
-                    state["col_width"] = 0.0
-                    state["prev_bounds_in_column"] = None
-
-                if state["col_x"] + w > state["usable_right"]:
-                    sheet_idx += 1
-                    draw_sheet(sheet_idx)
-                    state = reset_sheet_state(sheet_idx)
-
-                x0 = state["col_x"]
-                y0 = state["y_cursor"] - h
-                bounds = (x0, y0, x0 + w, y0 + h)
-
-                overlap_prev = False
-                if state["prev_bounds_in_column"] is not None:
-                    px0, py0, px1, py1 = state["prev_bounds_in_column"]
-                    overlap_prev = not (bounds[2] <= px0 or bounds[0] >= px1 or bounds[3] <= py0 or bounds[1] >= py1)
-
-                out_of_bounds = (
-                    bounds[0] < state["usable_left"]
-                    or bounds[2] > state["usable_right"]
-                    or bounds[1] < state["usable_bottom"]
-                    or bounds[3] > state["usable_top"]
-                )
-
-                if overlap_prev:
-                    self._logger.warning(
-                        "Section cartiglio overlap detected before drawing | section=%s | current=(%.2f, %.2f, %.2f, %.2f) | prev=(%.2f, %.2f, %.2f, %.2f)",
-                        getattr(sec, "index", None),
-                        bounds[0],
-                        bounds[1],
-                        bounds[2],
-                        bounds[3],
-                        px0,
-                        py0,
-                        px1,
-                        py1,
-                    )
-                    state["col_x"] += max(state["col_width"], px1 - px0) + col_gap
-                    state["y_cursor"] = state["usable_top"]
-                    state["col_width"] = 0.0
-                    state["prev_bounds_in_column"] = None
-                    continue
-
-                if out_of_bounds:
-                    self._logger.warning(
-                        "Section cartiglio outside usable area before drawing | section=%s | bounds=(%.2f, %.2f, %.2f, %.2f) | usable=(%.2f, %.2f, %.2f, %.2f)",
-                        getattr(sec, "index", None),
-                        bounds[0],
-                        bounds[1],
-                        bounds[2],
-                        bounds[3],
-                        state["usable_left"],
-                        state["usable_bottom"],
-                        state["usable_right"],
-                        state["usable_top"],
-                    )
-                    state["col_x"] += state["col_width"] + col_gap
-                    state["y_cursor"] = state["usable_top"]
-                    state["col_width"] = 0.0
-                    state["prev_bounds_in_column"] = None
-                    continue
-
-                # FIX PRINCIPALE:
-                # consumiamo subito lo slot di layout, anche se il disegno
-                # del cartiglio dovesse andare in errore parziale.
-                # Così il cartiglio successivo non riparte mai dallo stesso punto.
-                state["y_cursor"] = y0 - row_gap
-                state["col_width"] = max(state["col_width"], w)
-                state["prev_bounds_in_column"] = bounds
-                placed = True
-
+            for local_idx, item in enumerate(page_items):
+                sec = item.get("section")
+                col = local_idx % n_cols
+                row = local_idx // n_cols
+                row_y = usable_top - sum(row_max_h[:row]) - row * row_gap
+                y0 = row_y - item["cart_h"]
+                if y0 < usable_bottom:
+                    break
+                x0 = usable_left + col * col_width + (col_width - item["cart_w"]) * 0.5
                 try:
                     self._draw_single_section_cartiglio(msp, item, x0, y0, min_width)
                 except Exception as exc:
@@ -523,13 +481,9 @@ class DxfExporter:
                         sheet_index=sheet_idx,
                         exc=exc,
                     )
-                    # non annullare il posizionamento
 
-            if not placed:
-                self._logger.warning(
-                    "Unable to place section cartiglio after layout retries | section=%s",
-                    getattr(sec, "index", None),
-                )
+            i = j
+            sheet_idx += 1
 
     def _prepare_section_layout(
         self, section: SectionData, quote_step_m: float, z_exaggeration: float, section_h_scale: float
@@ -630,13 +584,16 @@ class DxfExporter:
         axis_i = min(range(len(sec.offsets)), key=lambda i: abs(sec.offsets[i]))
         axis_t = sec.terrain_z[axis_i]
         axis_p = sec.project_z[axis_i]
-        hdr = (
-            f"Sez {sec.index} | Prog {sec.progressive:.2f} | Tasse {axis_t:.2f} | Passe {axis_p:.2f} | "
-            f"Scala H 1:{int(item['section_h_scale'])} Vx{item['z_exaggeration']:.2f}"
-        )
+        v_scale = item["section_h_scale"] / max(1e-6, item["z_exaggeration"])
         current_step = "text drawing"
         header_y = y1 - top_pad - 3.0
-        msp.add_text(hdr, dxfattribs={"height": 2.4, "layer": "SEZ_TEXT"}).set_placement((content_left, header_y))
+        line1 = f"SEZIONE {sec.index}    PROG {sec.progressive:.2f} m"
+        line2 = (
+            f"T terreno {axis_t:.2f}   P progetto {axis_p:.2f}   "
+            f"Scala H 1:{int(item['section_h_scale'])}   V 1:{int(round(v_scale))}"
+        )
+        msp.add_text(line1, dxfattribs={"height": 3.0, "layer": "SEZ_TEXT"}).set_placement((content_left, header_y))
+        msp.add_text(line2, dxfattribs={"height": 2.2, "layer": "SEZ_TEXT"}).set_placement((content_left, header_y - 4.5))
 
         if min_width > 0:
             wmin_x = x1 - side_pad - 42.0
@@ -694,6 +651,15 @@ class DxfExporter:
         _, ay1 = map_pt(0.0, item["z_max"])
         if self._is_valid_point((ax0, ay0)) and self._is_valid_point((ax0, ay1)):
             msp.add_line((ax0, ay0), (ax0, ay1), dxfattribs={"layer": "SEZ_AXIS"})
+            msp.add_line((ax0, ay0), (ax0, ay1), dxfattribs={"layer": "SEZ_PROJECT"})
+        msp.add_text("OFFSET [m]", dxfattribs={"height": 2.0, "layer": "SEZ_TEXT"}).set_placement(
+            ((graph_left + graph_right) * 0.5, graph_bottom - 5.0),
+            align="MIDDLE_CENTER",
+        )
+        msp.add_text("QUOTA [m]", dxfattribs={"height": 2.0, "layer": "SEZ_TEXT"}).set_placement(
+            (graph_left - 2.0, (graph_bottom + graph_top) * 0.5),
+            align="MIDDLE_RIGHT",
+        )
 
         table_left = content_left
         table_right = min(content_right, table_left + table_w)
@@ -706,6 +672,11 @@ class DxfExporter:
             table_top,
             table_bottom,
             x_mapper=lambda off: map_pt(off, item["z_min"])[0],
+            highlight_offsets=[
+                0.0,
+                -sec.width_info.left_width if sec.width_info else float("nan"),
+                sec.width_info.right_width if sec.width_info else float("nan"),
+            ],
         )
 
         current_step = "quote/candle drawing"
@@ -730,6 +701,7 @@ class DxfExporter:
                     section=sec,
                     step=current_step,
                 )
+            msp.add_circle((px, py), radius=0.8, dxfattribs={"layer": "SEZ_TABLE"})
 
     def _build_section_cartiglio_layout_model(
         self,
@@ -802,7 +774,17 @@ class DxfExporter:
             "cart_h": cart_h,
         }
 
-    def _draw_section_table(self, msp, points: List[dict], left: float, right: float, top: float, bottom: float, x_mapper) -> dict:
+    def _draw_section_table(
+        self,
+        msp,
+        points: List[dict],
+        left: float,
+        right: float,
+        top: float,
+        bottom: float,
+        x_mapper,
+        highlight_offsets: Optional[List[float]] = None,
+    ) -> dict:
         rows = ["OFFSET", "TERRENO", "PROGETTO"]
         label_w = 30.0
         available_w = max(10.0, right - left - label_w - 2.0)
@@ -815,7 +797,7 @@ class DxfExporter:
         data_left = left + label_w + 1.5
         data_right = table_right - 1.5
         data_w = max(1e-6, data_right - data_left)
-        text_h = max(1.6, min(2.2, data_w / max(1.0, n) * 0.28))
+        text_h = max(2.0, min(2.6, data_w / max(1.0, n) * 0.28))
 
         msp.add_lwpolyline(
             [(left, top), (table_right, top), (table_right, bottom), (left, bottom), (left, top)],
@@ -851,6 +833,14 @@ class DxfExporter:
         for c in range(1, len(anchors)):
             x = (anchors[c - 1]["x"] + anchors[c]["x"]) / 2.0
             msp.add_line((x, top), (x, bottom), dxfattribs={"layer": "SEZ_TABLE"})
+
+        if highlight_offsets:
+            for off in highlight_offsets:
+                if not math.isfinite(off):
+                    continue
+                hx = float(x_mapper(off))
+                hx = max(data_left, min(data_right, hx))
+                msp.add_line((hx, top), (hx, bottom), dxfattribs={"layer": "SEZ_PROJECT"})
 
         for p in anchors:
             x = p["x"]
