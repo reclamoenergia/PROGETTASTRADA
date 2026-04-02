@@ -249,15 +249,16 @@ class MainDialog(QDialog):
         form_container = QWidget()
         form_layout = QVBoxLayout(form_container)
         form_layout.addWidget(self._build_input_group())
-        form_layout.addWidget(self._build_vertical_profile_group())
         form_layout.addWidget(self._build_geom_group())
         form_layout.addWidget(self._build_sampling_group())
+        form_layout.addWidget(self._build_vertical_profile_group())
         form_layout.addWidget(self._build_output_group())
         form_layout.addWidget(self._build_json_group())
         form_layout.addStretch(1)
         scroll_area.setWidget(form_container)
         root.addWidget(scroll_area, 1)
         root.addWidget(self._build_actions_group())
+        self._set_parameter_tooltips()
 
     def _build_input_group(self):
         gb = QGroupBox("INPUT")
@@ -466,6 +467,165 @@ class MainDialog(QDialog):
         vl.addWidget(self.progress)
         vl.addWidget(self.log)
         return gb
+
+    def _set_parameter_tooltips(self):
+        self.cmb_dtm.setToolTip(
+            "Seleziona il raster DTM da usare come superficie del terreno. "
+            "Influisce sulle quote campionate lungo asse, profilo e sezioni."
+        )
+        self.cmb_axis.setToolTip(
+            "Scegli il layer lineare dell'asse stradale. "
+            "Definisce la geometria di riferimento per tutto il progetto."
+        )
+        self.cmb_polygon.setToolTip(
+            "Layer poligonale dell'area viabile da analizzare. "
+            "Serve per vincolare le elaborazioni spaziali locali."
+        )
+        self.cmb_forced.setToolTip(
+            "Layer punti quota automatici da usare come vincoli altimetrici. "
+            "I punti selezionati influenzano la ricostruzione del profilo."
+        )
+
+        self.min_width.setToolTip(
+            "Larghezza minima della piattaforma stradale in metri [m]. "
+            "Valori maggiori aumentano l'area occupata."
+        )
+        self.crossfall_nominal.setToolTip(
+            "Pendenza trasversale nominale in percentuale [%]. "
+            "È il valore obiettivo usato nel modello geometrico."
+        )
+        self.crossfall_min.setToolTip(
+            "Limite minimo della pendenza trasversale [%]. "
+            "Valori troppo bassi possono peggiorare il drenaggio."
+        )
+        self.crossfall_max.setToolTip(
+            "Limite massimo della pendenza trasversale [%]. "
+            "Valori alti aumentano l'inclinazione laterale."
+        )
+        self.long_slope_max.setToolTip(
+            "Pendenza longitudinale massima ammessa [%]. "
+            "Controlla il gradiente massimo del profilo di progetto."
+        )
+        self.plan_radius_min.setToolTip(
+            "Raggio minimo planimetrico in metri [m]. "
+            "Valori maggiori producono curve orizzontali più ampie."
+        )
+        self.vert_radius_min.setToolTip(
+            "Raggio minimo verticale in metri [m]. "
+            "Valori maggiori rendono i raccordi verticali più dolci."
+        )
+        self.cut_slope.setToolTip(
+            "Pendenza di sterro espressa come rapporto H:V. "
+            "Influisce sulla geometria delle scarpate in scavo."
+        )
+        self.fill_slope.setToolTip(
+            "Pendenza di rilevato espressa come rapporto H:V. "
+            "Influisce sulla geometria delle scarpate in riporto."
+        )
+        self.pad_slope.setToolTip(
+            "Pendenza della piazzola in percentuale [%]. "
+            "Valori maggiori aumentano l'inclinazione della superficie."
+        )
+
+        self.axis_step.setToolTip(
+            "Passo di campionamento lungo asse in metri [m]. "
+            "Un passo più piccolo aumenta dettaglio e tempi di calcolo."
+        )
+        self.section_step.setToolTip(
+            "Distanza tra sezioni consecutive in metri [m]. "
+            "Valori minori generano più sezioni."
+        )
+        self.section_length.setToolTip(
+            "Lunghezza totale di ciascuna sezione in metri [m]. "
+            "Valori maggiori estendono l'analisi laterale."
+        )
+        self.section_sample_step.setToolTip(
+            "Passo di campionamento interno alla sezione in metri [m]. "
+            "Valori piccoli aumentano la risoluzione del profilo trasversale."
+        )
+        self.profile_h_scale.setToolTip(
+            "Scala orizzontale del profilo nel formato 1:n. "
+            "n più alto riduce la dimensione grafica in orizzontale."
+        )
+        self.profile_v_scale.setToolTip(
+            "Scala verticale del profilo nel formato 1:n. "
+            "n più basso enfatizza le variazioni altimetriche."
+        )
+        self.section_scale.setToolTip(
+            "Scala grafica delle sezioni nel formato 1:n. "
+            "Determina la dimensione di esportazione delle sezioni."
+        )
+        self.section_vertical_exaggeration.setToolTip(
+            "Fattore di esagerazione verticale delle sezioni. "
+            "Valori maggiori accentuano i dislivelli visualizzati."
+        )
+        self.section_quote_step.setToolTip(
+            "Passo delle quotazioni in sezione in metri [m]. "
+            "Valori minori mostrano quote più frequenti."
+        )
+        self.cmb_terrain_source.setToolTip(
+            "Sorgente dati terreno per il campionamento. "
+            "Raster DTM usa il raster selezionato, TIN usa un modello locale."
+        )
+        self.tin_contour_interval.setToolTip(
+            "Intervallo altimetrico tra curve di livello locali [m]. "
+            "Valori minori creano curve più dense."
+        )
+        self.tin_processing_buffer.setToolTip(
+            "Buffer locale attorno all'asse per costruire il TIN [m]. "
+            "Valori maggiori includono più territorio."
+        )
+        self.tin_simplify_tolerance.setToolTip(
+            "Tolleranza di semplificazione delle curve [m]. "
+            "Valori più alti riducono dettaglio e peso del TIN."
+        )
+        self.chk_tin_add_contours.setToolTip(
+            "Se attivo, aggiunge in QGIS le curve locali usate per il TIN."
+        )
+        self.chk_tin_add_triangles.setToolTip(
+            "Se attivo, aggiunge in QGIS i triangoli del TIN locale."
+        )
+        self.chk_tin_cache.setToolTip(
+            "Riusa il TIN già calcolato nella sessione corrente. "
+            "Riduce i tempi se i parametri non cambiano."
+        )
+
+        self.cmb_profile_mode.setToolTip(
+            "Modalità di costruzione del profilo verticale. "
+            "Automatico usa il comportamento corrente, PVI usa punti geometrici."
+        )
+        self.cmb_pvi_layer.setToolTip(
+            "Layer punti contenente i PVI da usare nel profilo verticale."
+        )
+        self.cmb_pvi_elev_field.setToolTip(
+            "Campo attributo con la quota dei PVI in metri [m]. "
+            "Valori errati alterano il tracciato altimetrico."
+        )
+        self.cmb_pvi_curve_field.setToolTip(
+            "Campo attributo con lunghezza curva verticale [m]. "
+            "Se vuoto, viene usata la lunghezza curva di default."
+        )
+        self.default_curve_length.setToolTip(
+            "Lunghezza curva verticale predefinita in metri [m]. "
+            "Si applica ai PVI senza valore specifico."
+        )
+
+        self.output_folder.setToolTip(
+            "Cartella di destinazione dei file esportati. "
+            "Tutti gli output verranno scritti in questo percorso."
+        )
+        self.project_name.setToolTip(
+            "Nome base del progetto usato nei file di output."
+        )
+        self.chk_dxf_sections.setToolTip(
+            "Abilita l'esportazione DXF delle sezioni trasversali."
+        )
+        self.chk_dxf_profile.setToolTip(
+            "Abilita l'esportazione DXF del profilo verticale."
+        )
+        self.chk_csv.setToolTip(
+            "Abilita l'esportazione CSV dei volumi e dei risultati tabellari."
+        )
 
     def _choose_folder(self):
         folder = QFileDialog.getExistingDirectory(self, "Seleziona cartella output")
