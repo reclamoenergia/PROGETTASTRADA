@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import logging
+from bisect import bisect_right
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -15,6 +16,17 @@ from ..utils.math_utils import clamp
 class PviLoadResult:
     rows: List[PviRow]
     warnings: List[str]
+
+
+@dataclass
+class VerticalCurve:
+    pvi_index: int
+    pvc: float
+    pvt: float
+    length: float
+    g_in: float
+    g_out: float
+    z_pvc: float
 
 
 class VerticalProfileBuilder:
@@ -42,15 +54,22 @@ class VerticalProfileBuilder:
         z = self._limit_slopes(progressive, z, max_slope)
         return ProfileData(progressive=progressive, terrain_z=terrain_z, project_z=z)
 
-    def build_from_pvi(self, progressive: Sequence[float], terrain_z: Sequence[float], pvi_rows: Sequence[PviRow]) -> ProfileData:
+    def build_from_pvi(
+        self,
+        progressive: Sequence[float],
+        terrain_z: Sequence[float],
+        pvi_rows: Sequence[PviRow],
+        default_curve_length: float = 0.0,
+    ) -> ProfileData:
         rows = [r for r in pvi_rows if r.enabled]
         if len(rows) < 2:
             raise ValueError("Servono almeno 2 PVI validi per costruire il profilo.")
         rows = sorted(rows, key=lambda r: r.progressive)
+        curves, _warnings = self._compute_vertical_curves(rows, default_curve_length)
 
         proj: List[float] = []
         for s in progressive:
-            proj.append(self._interpolate_project_z(float(s), rows))
+            proj.append(self._interpolate_project_z(float(s), rows, curves))
         return ProfileData(progressive=list(progressive), terrain_z=list(terrain_z), project_z=proj)
 
     def load_pvi_rows(
@@ -125,9 +144,18 @@ class VerticalProfileBuilder:
 
         return PviLoadResult(rows=rows, warnings=warnings)
 
-    def recompute_pvi_diagnostics(self, rows: Sequence[PviRow], max_slope_pct: float) -> List[PviRow]:
+    def recompute_pvi_diagnostics(
+        self,
+        rows: Sequence[PviRow],
+        max_slope_pct: float,
+        default_curve_length: float = 0.0,
+    ) -> List[PviRow]:
         max_slope = max_slope_pct / 100.0
         out = sorted([r for r in rows], key=lambda r: r.progressive)
+        curve_warnings_by_idx: Dict[int, List[str]] = {}
+        _curves, curve_warnings = self._compute_vertical_curves(out, default_curve_length)
+        for idx, msg in curve_warnings:
+            curve_warnings_by_idx.setdefault(idx, []).append(msg)
         for i, row in enumerate(out):
             warn = []
             if row.curve_length < 0:
@@ -140,6 +168,7 @@ class VerticalProfileBuilder:
                     slope = (row.elevation - out[i - 1].elevation) / ds
                     if abs(slope) > max_slope + 1e-6:
                         warn.append("Pendenza > limite")
+            warn.extend(curve_warnings_by_idx.get(i, []))
             row.warning = "; ".join(warn)
         return out
 
@@ -159,27 +188,101 @@ class VerticalProfileBuilder:
             return None
         return (rows[idx + 1].elevation - rows[idx].elevation) / ds * 100.0
 
-    def _interpolate_project_z(self, s: float, rows: Sequence[PviRow]) -> float:
-        if s <= rows[0].progressive:
+    def _interpolate_project_z(self, s: float, rows: Sequence[PviRow], curves: Sequence[VerticalCurve]) -> float:
+        slopes = self._segment_slopes(rows)
+        if not slopes:
             return rows[0].elevation
-        if s >= rows[-1].progressive:
-            return rows[-1].elevation
-        for i in range(1, len(rows)):
-            r0, r1 = rows[i - 1], rows[i]
-            if r1.progressive >= s:
-                ds = r1.progressive - r0.progressive
-                if ds <= 1e-9:
-                    return r1.elevation
-                t = (s - r0.progressive) / ds
-                # Hook per futura curva verticale: sostituire interpolazione lineare.
-                return r0.elevation + (r1.elevation - r0.elevation) * t
-        return rows[-1].elevation
+
+        for curve in curves:
+            if curve.pvc <= s <= curve.pvt:
+                x = s - curve.pvc
+                return curve.z_pvc + curve.g_in * x + ((curve.g_out - curve.g_in) / (2.0 * curve.length)) * (x ** 2)
+
+        p_values = [r.progressive for r in rows]
+        if s <= p_values[0]:
+            return rows[0].elevation + slopes[0] * (s - rows[0].progressive)
+        if s >= p_values[-1]:
+            return rows[-1].elevation + slopes[-1] * (s - rows[-1].progressive)
+
+        seg_idx = max(0, min(len(slopes) - 1, bisect_right(p_values, s) - 1))
+        anchor = rows[seg_idx]
+        return anchor.elevation + slopes[seg_idx] * (s - anchor.progressive)
 
     def interpolate_pvi_elevation(self, rows: Sequence[PviRow], s: float) -> float:
         sorted_rows = sorted([r for r in rows if r.enabled], key=lambda r: r.progressive)
         if not sorted_rows:
             return 0.0
-        return self._interpolate_project_z(s, sorted_rows)
+        curves, _warnings = self._compute_vertical_curves(sorted_rows, 0.0)
+        return self._interpolate_project_z(s, sorted_rows, curves)
+
+    def _segment_slopes(self, rows: Sequence[PviRow]) -> List[float]:
+        slopes: List[float] = []
+        for i in range(len(rows) - 1):
+            ds = rows[i + 1].progressive - rows[i].progressive
+            if ds <= 1e-9:
+                slopes.append(0.0)
+            else:
+                slopes.append((rows[i + 1].elevation - rows[i].elevation) / ds)
+        return slopes
+
+    def _compute_vertical_curves(
+        self,
+        rows: Sequence[PviRow],
+        default_curve_length: float,
+    ) -> Tuple[List[VerticalCurve], List[Tuple[int, str]]]:
+        curves: List[VerticalCurve] = []
+        warnings: List[Tuple[int, str]] = []
+        if len(rows) < 3:
+            return curves, warnings
+
+        default_l = max(0.0, float(default_curve_length))
+        prev_curve: Optional[VerticalCurve] = None
+        eps = 1e-6
+
+        for idx in range(1, len(rows) - 1):
+            p_prev = rows[idx - 1]
+            p_cur = rows[idx]
+            p_next = rows[idx + 1]
+            ds_in = p_cur.progressive - p_prev.progressive
+            ds_out = p_next.progressive - p_cur.progressive
+
+            if ds_in <= eps or ds_out <= eps:
+                warnings.append((idx, "Impossibile calcolare pendenze (PVI coincidenti)."))
+                continue
+
+            g_in = (p_cur.elevation - p_prev.elevation) / ds_in
+            g_out = (p_next.elevation - p_cur.elevation) / ds_out
+
+            raw_l = p_cur.curve_length if p_cur.curve_length > eps else default_l
+            if raw_l <= eps:
+                if p_cur.curve_length <= eps and default_l <= eps:
+                    warnings.append((idx, "L curva nulla/non valida: tratto mantenuto a tangenti."))
+                continue
+            max_len = 2.0 * min(ds_in, ds_out)
+            if raw_l >= max_len - eps:
+                warnings.append((idx, f"L curva troppo grande rispetto alle progressive adiacenti (max {max_len:.3f} m)."))
+                continue
+
+            half = raw_l / 2.0
+            pvc = p_cur.progressive - half
+            pvt = p_cur.progressive + half
+            z_pvc = p_cur.elevation - g_in * half
+            curve = VerticalCurve(
+                pvi_index=idx,
+                pvc=pvc,
+                pvt=pvt,
+                length=raw_l,
+                g_in=g_in,
+                g_out=g_out,
+                z_pvc=z_pvc,
+            )
+            if prev_curve and curve.pvc < prev_curve.pvt - eps:
+                warnings.append((idx, "Curva sovrapposta alla precedente: curva disattivata localmente."))
+                continue
+            curves.append(curve)
+            prev_curve = curve
+
+        return curves, warnings
 
     def progressive_to_axis_point(
         self,

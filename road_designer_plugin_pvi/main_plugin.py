@@ -207,14 +207,26 @@ class RoadDesignerPlugin:
             d.cmb_pvi_curve_field.currentText(),
             d.default_curve_length.value(),
         )
-        self.pvi_rows = self.vp_builder.recompute_pvi_diagnostics(result.rows, d.long_slope_max.value())
+        self.pvi_rows = self.vp_builder.recompute_pvi_diagnostics(
+            result.rows,
+            d.long_slope_max.value(),
+            d.default_curve_length.value(),
+        )
         self.pvi_rows_original = [PviRow(**vars(r)) for r in self.pvi_rows]
         self._refresh_pvi_table()
         self.rebuild_preview_profile(log_warnings=result.warnings)
 
     def reset_pvi_edits(self):
         self.pvi_rows = [PviRow(**vars(r)) for r in self.pvi_rows_original]
-        self.pvi_rows = self.vp_builder.recompute_pvi_diagnostics(self.pvi_rows, self.dialog.long_slope_max.value()) if self.dialog else self.pvi_rows
+        self.pvi_rows = (
+            self.vp_builder.recompute_pvi_diagnostics(
+                self.pvi_rows,
+                self.dialog.long_slope_max.value(),
+                self.dialog.default_curve_length.value(),
+            )
+            if self.dialog
+            else self.pvi_rows
+        )
         self._refresh_pvi_table()
         self.rebuild_preview_profile()
 
@@ -272,7 +284,11 @@ class RoadDesignerPlugin:
             if not self._write_pvi_row_to_layer(self.pvi_rows[r], update_geometry=False):
                 self._refresh_pvi_table()
                 return
-        self.pvi_rows = self.vp_builder.recompute_pvi_diagnostics(self.pvi_rows, self.dialog.long_slope_max.value())
+        self.pvi_rows = self.vp_builder.recompute_pvi_diagnostics(
+            self.pvi_rows,
+            self.dialog.long_slope_max.value(),
+            self.dialog.default_curve_length.value(),
+        )
         self._refresh_pvi_table()
         self.rebuild_preview_profile()
 
@@ -282,7 +298,11 @@ class RoadDesignerPlugin:
         self.pvi_rows[row_idx].elevation = float(new_elevation)
         if not self._write_pvi_row_to_layer(self.pvi_rows[row_idx], update_geometry=False):
             return
-        self.pvi_rows = self.vp_builder.recompute_pvi_diagnostics(self.pvi_rows, self.dialog.long_slope_max.value())
+        self.pvi_rows = self.vp_builder.recompute_pvi_diagnostics(
+            self.pvi_rows,
+            self.dialog.long_slope_max.value(),
+            self.dialog.default_curve_length.value(),
+        )
         self._refresh_pvi_table()
         self.rebuild_preview_profile()
 
@@ -434,11 +454,19 @@ class RoadDesignerPlugin:
                 d.preview.clear_data()
                 d.lbl_pvi_status.setText("Servono almeno 2 PVI validi")
                 return
-            profile = self.vp_builder.build_from_pvi(align.progressive, terrain_axis, self.pvi_rows)
+            profile = self.vp_builder.build_from_pvi(
+                align.progressive,
+                terrain_axis,
+                self.pvi_rows,
+                d.default_curve_length.value(),
+            )
             self.active_profile = profile
             pvi_points = [(r.progressive, r.elevation) for r in self.pvi_rows if r.enabled]
             d.preview.set_data(profile.progressive, profile.terrain_z, profile.project_z, pvi_points)
             msg = f"PVI caricati: {len(self.pvi_rows)}"
+            state_warnings = [r.warning for r in self.pvi_rows if r.warning]
+            if state_warnings:
+                msg += f" | stati critici: {len(state_warnings)}"
             if log_warnings:
                 msg += " | warning: " + " | ".join(log_warnings[:3])
             d.lbl_pvi_status.setText(msg)
@@ -476,8 +504,13 @@ class RoadDesignerPlugin:
             if self._profile_mode() == "pvi":
                 if len(self.pvi_rows) < 2:
                     self.reload_pvi_from_layer()
-                profile = self.vp_builder.build_from_pvi(align.progressive, terrain_axis, self.pvi_rows)
-                d.append_log("Profilo longitudinale da PVI geometrici")
+                profile = self.vp_builder.build_from_pvi(
+                    align.progressive,
+                    terrain_axis,
+                    self.pvi_rows,
+                    d.default_curve_length.value(),
+                )
+                d.append_log("Profilo longitudinale da PVI con curve verticali paraboliche")
             else:
                 profile = self.vp_builder.build(
                     align.progressive,
