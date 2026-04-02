@@ -27,6 +27,9 @@ class SettingsManager:
         "section_scale",
         "section_vertical_exaggeration",
         "section_quote_step",
+        "tin_contour_interval",
+        "tin_processing_buffer",
+        "tin_simplify_tolerance",
     }
 
     def collect_ui_state(self, dialog) -> Dict[str, object]:
@@ -59,6 +62,13 @@ class SettingsManager:
             axis_layer_name=dialog.cmb_axis.currentText(),
             polygon_layer_name=dialog.cmb_polygon.currentText(),
             forced_points_layer_name=dialog.cmb_forced.currentText(),
+            terrain_source_mode="tin" if dialog.cmb_terrain_source.currentIndex() == 1 else "raster",
+            tin_contour_interval=dialog.tin_contour_interval.value(),
+            tin_processing_buffer=dialog.tin_processing_buffer.value(),
+            tin_simplify_tolerance=dialog.tin_simplify_tolerance.value(),
+            tin_add_contours_layer=dialog.chk_tin_add_contours.isChecked(),
+            tin_add_triangles_layer=dialog.chk_tin_add_triangles.isChecked(),
+            tin_use_session_cache=dialog.chk_tin_cache.isChecked(),
         )
         return settings.to_dict()
 
@@ -92,6 +102,13 @@ class SettingsManager:
         dialog.select_combo_by_text(dialog.cmb_axis, s.axis_layer_name)
         dialog.select_combo_by_text(dialog.cmb_polygon, s.polygon_layer_name)
         dialog.select_combo_by_text(dialog.cmb_forced, s.forced_points_layer_name)
+        dialog.cmb_terrain_source.setCurrentIndex(1 if str(s.terrain_source_mode).lower() == "tin" else 0)
+        dialog.tin_contour_interval.setValue(float(s.tin_contour_interval))
+        dialog.tin_processing_buffer.setValue(float(s.tin_processing_buffer))
+        dialog.tin_simplify_tolerance.setValue(float(s.tin_simplify_tolerance))
+        dialog.chk_tin_add_contours.setChecked(bool(s.tin_add_contours_layer))
+        dialog.chk_tin_add_triangles.setChecked(bool(s.tin_add_triangles_layer))
+        dialog.chk_tin_cache.setChecked(bool(s.tin_use_session_cache))
 
     def save_to_json(self, path: str, data: Dict[str, object]) -> None:
         with open(path, "w", encoding="utf-8") as f:
@@ -135,6 +152,8 @@ class SettingsManager:
             "section_quote_step",
             "cut_slope_hv",
             "fill_slope_hv",
+            "tin_contour_interval",
+            "tin_processing_buffer",
         ):
             _require_positive(key)
 
@@ -154,4 +173,6 @@ class SettingsManager:
         pad = float(clean.get("pad_slope_pct", 0.0))
         if abs(pad) > 100:
             raise ValueError("pad_slope_pct non plausibile (|valore| > 100%).")
+        if float(clean.get("tin_simplify_tolerance", 0.0)) < 0:
+            raise ValueError("tin_simplify_tolerance deve essere >= 0.")
         return clean

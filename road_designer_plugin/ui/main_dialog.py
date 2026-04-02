@@ -98,6 +98,15 @@ class MainDialog(QDialog):
         self.section_scale = self._spin(200, 10, 5000, 10)
         self.section_vertical_exaggeration = self._spin(2, 0.1, 20, 0.1)
         self.section_quote_step = self._spin(5, 0.1, 100, 0.1)
+        self.cmb_terrain_source = QComboBox()
+        self.cmb_terrain_source.addItems(["Raster DTM", "TIN from local contours"])
+        self.tin_contour_interval = self._spin(1.0, 0.1, 100.0, 0.1)
+        self.tin_processing_buffer = self._spin(120.0, 5.0, 5000.0, 5.0)
+        self.tin_simplify_tolerance = self._spin(0.0, 0.0, 50.0, 0.1)
+        self.chk_tin_add_contours = QCheckBox("Aggiungi curve locali a QGIS")
+        self.chk_tin_add_triangles = QCheckBox("Aggiungi triangoli TIN a QGIS")
+        self.chk_tin_cache = QCheckBox("Riusa TIN in sessione")
+        self.chk_tin_cache.setChecked(True)
         gl.addWidget(QLabel("Passo lungo asse"), 0, 0)
         gl.addWidget(self.axis_step, 0, 1)
         gl.addWidget(QLabel("Passo sezioni"), 1, 0)
@@ -116,6 +125,24 @@ class MainDialog(QDialog):
         gl.addWidget(self.section_vertical_exaggeration, 7, 1)
         gl.addWidget(QLabel("Passo quotazione sezione [m]"), 8, 0)
         gl.addWidget(self.section_quote_step, 8, 1)
+        gl.addWidget(QLabel("Sorgente terreno"), 9, 0)
+        gl.addWidget(self.cmb_terrain_source, 9, 1)
+
+        self.tin_group = QGroupBox("Parametri TIN locale")
+        tin_gl = QGridLayout(self.tin_group)
+        tin_gl.addWidget(QLabel("Intervallo curve [m]"), 0, 0)
+        tin_gl.addWidget(self.tin_contour_interval, 0, 1)
+        tin_gl.addWidget(QLabel("Buffer area locale [m]"), 1, 0)
+        tin_gl.addWidget(self.tin_processing_buffer, 1, 1)
+        tin_gl.addWidget(QLabel("Semplificazione curve [m]"), 2, 0)
+        tin_gl.addWidget(self.tin_simplify_tolerance, 2, 1)
+        tin_gl.addWidget(self.chk_tin_add_contours, 3, 0, 1, 2)
+        tin_gl.addWidget(self.chk_tin_add_triangles, 4, 0, 1, 2)
+        tin_gl.addWidget(self.chk_tin_cache, 5, 0, 1, 2)
+        gl.addWidget(self.tin_group, 10, 0, 1, 2)
+
+        self.cmb_terrain_source.currentIndexChanged.connect(self._toggle_tin_group)
+        self._toggle_tin_group()
         return gb
 
     def _build_output_group(self):
@@ -166,6 +193,9 @@ class MainDialog(QDialog):
         folder = QFileDialog.getExistingDirectory(self, "Seleziona cartella output")
         if folder:
             self.output_folder.setText(folder)
+
+    def _toggle_tin_group(self):
+        self.tin_group.setVisible(self.cmb_terrain_source.currentIndex() == 1)
 
     def append_log(self, text: str):
         self.log.appendPlainText(text)

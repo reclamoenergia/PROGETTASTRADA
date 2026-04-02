@@ -7,7 +7,7 @@ from qgis.core import QgsGeometry
 
 from .alignment import Alignment
 from .models import SectionData
-from .terrain_sampler import TerrainSampler
+from .terrain_provider import TerrainProvider
 from ..utils.geometry_utils import line_from_point_dir, normalize, perpendicular
 
 
@@ -15,7 +15,7 @@ class CrossSectionGenerator:
     def generate(
         self,
         alignment: Alignment,
-        terrain: TerrainSampler,
+        terrain: TerrainProvider,
         section_step: float,
         section_length: float,
         sample_step: float,
@@ -37,7 +37,7 @@ class CrossSectionGenerator:
                 x = p[0] + nor[0] * off
                 y = p[1] + nor[1] * off
                 offsets.append(off)
-                terrain_z.append(terrain.sample_point(x, y))
+                terrain_z.append(terrain.get_elevation(x, y))
                 off += sample_step
             sections.append(
                 SectionData(

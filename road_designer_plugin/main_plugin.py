@@ -15,7 +15,9 @@ from .core.earthworks import EarthworksCalculator
 from .core.input_manager import InputManager
 from .core.road_model import RoadModelBuilder
 from .core.settings_manager import SettingsManager
-from .core.terrain_sampler import TerrainSampler
+from .core.raster_terrain_provider import RasterTerrainProvider
+from .core.tin_builder import TinBuilder
+from .core.tin_terrain_provider import TinTerrainProvider
 from .core.vertical_profile import VerticalProfileBuilder
 from .core.width_analysis import WidthAnalysis
 from .export.dxf_exporter import DxfExporter
@@ -29,6 +31,7 @@ class RoadDesignerPlugin:
         self.iface = iface
         self.action: Optional[QAction] = None
         self.dialog: Optional[MainDialog] = None
+        self.tin_builder = TinBuilder()
 
     def initGui(self):
         self.action = QAction("Road Designer Plugin", self.iface.mainWindow())
@@ -100,8 +103,11 @@ class RoadDesignerPlugin:
             d.append_log(f"Asse raccordato: L={align.length:.2f} m, campioni={len(align.points)}")
             d.progress.setValue(25)
 
-            terrain = TerrainSampler(dtm)
-            terrain_axis = terrain.sample_many(align.points)
+            terrain = self._build_terrain_provider(dtm, align.points)
+            if hasattr(terrain, "sample_many"):
+                terrain_axis = terrain.sample_many(align.points)
+            else:
+                terrain_axis = terrain.sample_along_points(align.points)
             profile = VerticalProfileBuilder().build(
                 align.progressive,
                 terrain_axis,
@@ -148,6 +154,39 @@ class RoadDesignerPlugin:
             self._info("Calcolo completato con successo")
         except Exception as exc:
             self._warn(f"Errore durante il calcolo: {exc}")
+
+
+    def _build_terrain_provider(self, dtm, align_points):
+        d = self.dialog
+        if not d:
+            return RasterTerrainProvider(dtm)
+        mode = "tin" if d.cmb_terrain_source.currentIndex() == 1 else "raster"
+        if mode == "raster":
+            d.append_log("Sorgente terreno: Raster DTM")
+            return RasterTerrainProvider(dtm)
+
+        d.append_log("Sorgente terreno: TIN da curve locali")
+        try:
+            tin_result = self.tin_builder.build_from_local_contours(
+                dtm_layer=dtm,
+                axis_points=align_points,
+                contour_interval=d.tin_contour_interval.value(),
+                processing_buffer=d.tin_processing_buffer.value(),
+                simplify_tolerance=d.tin_simplify_tolerance.value(),
+                add_contours_layer=d.chk_tin_add_contours.isChecked(),
+                add_triangles_layer=d.chk_tin_add_triangles.isChecked(),
+                use_cache=d.chk_tin_cache.isChecked(),
+            )
+        except Exception as exc:
+            raise ValueError(f"Generazione TIN locale fallita: {exc}") from exc
+
+        d.append_log(
+            "TIN locale pronto: "
+            f"triangoli={len(tin_result.surface.triangles)}, "
+            f"vertici={len(tin_result.surface.vertices)}, "
+            f"extent={tin_result.local_extent.toString()}"
+        )
+        return TinTerrainProvider(tin_result.surface)
 
     def _run_exports(self, align, axis_layer, profile, sections, vol):
         d = self.dialog
