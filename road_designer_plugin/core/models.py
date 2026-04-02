@@ -112,6 +112,14 @@ class PluginSettings:
     polygon_layer_name: str = ""
     forced_points_layer_name: str = ""
 
+    terrain_source_mode: str = "raster"
+    tin_contour_interval: float = 1.0
+    tin_processing_buffer: float = 120.0
+    tin_simplify_tolerance: float = 0.0
+    tin_add_contours_layer: bool = False
+    tin_add_triangles_layer: bool = False
+    tin_use_session_cache: bool = True
+
     def to_dict(self) -> Dict[str, object]:
         return self.__dict__.copy()
 
