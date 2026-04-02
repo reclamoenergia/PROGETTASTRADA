@@ -175,6 +175,35 @@ class VerticalProfileBuilder:
                 return r0.elevation + (r1.elevation - r0.elevation) * t
         return rows[-1].elevation
 
+    def interpolate_pvi_elevation(self, rows: Sequence[PviRow], s: float) -> float:
+        sorted_rows = sorted([r for r in rows if r.enabled], key=lambda r: r.progressive)
+        if not sorted_rows:
+            return 0.0
+        return self._interpolate_project_z(s, sorted_rows)
+
+    def progressive_to_axis_point(
+        self,
+        progressive: float,
+        axis_points: Sequence[Tuple[float, float]],
+    ) -> Optional[Tuple[float, float]]:
+        if len(axis_points) < 2:
+            return None
+        remaining = max(0.0, float(progressive))
+        for i in range(1, len(axis_points)):
+            p0 = axis_points[i - 1]
+            p1 = axis_points[i]
+            seg_len = math.dist(p0, p1)
+            if seg_len <= 1e-9:
+                continue
+            if remaining <= seg_len:
+                t = remaining / seg_len
+                return (
+                    p0[0] + (p1[0] - p0[0]) * t,
+                    p0[1] + (p1[1] - p0[1]) * t,
+                )
+            remaining -= seg_len
+        return axis_points[-1]
+
     def _forced_by_progressive(
         self,
         progressive: List[float],

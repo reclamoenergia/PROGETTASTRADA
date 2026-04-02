@@ -7,7 +7,7 @@ from typing import List, Optional
 
 from qgis.PyQt.QtCore import Qt
 from qgis.PyQt.QtWidgets import QAction, QFileDialog, QTableWidgetItem
-from qgis.core import QgsProject, Qgis
+from qgis.core import QgsFeature, QgsGeometry, QgsPointXY, QgsProject, Qgis
 
 from .core.alignment import AlignmentBuilder
 from .core.constraints import ConstraintChecker
@@ -38,6 +38,7 @@ class RoadDesignerPlugin:
         self.pvi_rows: List[PviRow] = []
         self.pvi_rows_original: List[PviRow] = []
         self._pvi_table_updating = False
+        self.active_profile = None
 
     def initGui(self):
         self.action = QAction("Road Designer Plugin PVI", self.iface.mainWindow())
@@ -60,7 +61,10 @@ class RoadDesignerPlugin:
             self.dialog.cmb_pvi_layer.currentIndexChanged.connect(self._on_pvi_layer_changed)
             self.dialog.btn_reload_pvi.clicked.connect(self.reload_pvi_from_layer)
             self.dialog.btn_reset_pvi.clicked.connect(self.reset_pvi_edits)
+            self.dialog.btn_add_pvi.clicked.connect(self.add_pvi)
+            self.dialog.btn_remove_pvi.clicked.connect(self.remove_selected_pvi)
             self.dialog.tbl_pvi.itemChanged.connect(self._on_pvi_table_item_changed)
+            self.dialog.preview.pviDragged.connect(self._on_preview_pvi_dragged)
         self.refresh_layers()
         self._on_mode_changed()
         self.dialog.show()
@@ -260,11 +264,157 @@ class RoadDesignerPlugin:
             return
         if c == 2:
             self.pvi_rows[r].elevation = val
+            if not self._write_pvi_row_to_layer(self.pvi_rows[r], update_geometry=False):
+                self._refresh_pvi_table()
+                return
         else:
             self.pvi_rows[r].curve_length = max(0.0, val)
+            if not self._write_pvi_row_to_layer(self.pvi_rows[r], update_geometry=False):
+                self._refresh_pvi_table()
+                return
         self.pvi_rows = self.vp_builder.recompute_pvi_diagnostics(self.pvi_rows, self.dialog.long_slope_max.value())
         self._refresh_pvi_table()
         self.rebuild_preview_profile()
+
+    def _on_preview_pvi_dragged(self, row_idx: int, new_elevation: float):
+        if not self.dialog or row_idx < 0 or row_idx >= len(self.pvi_rows):
+            return
+        self.pvi_rows[row_idx].elevation = float(new_elevation)
+        if not self._write_pvi_row_to_layer(self.pvi_rows[row_idx], update_geometry=False):
+            return
+        self.pvi_rows = self.vp_builder.recompute_pvi_diagnostics(self.pvi_rows, self.dialog.long_slope_max.value())
+        self._refresh_pvi_table()
+        self.rebuild_preview_profile()
+
+    def add_pvi(self):
+        d = self.dialog
+        if not d:
+            return
+        if self._profile_mode() != "pvi":
+            self._warn("Attivare la modalità profilo PVI per aggiungere punti.")
+            return
+        align = self._build_alignment()
+        if not align:
+            return
+        pvi_layer = self._layer(d.cmb_pvi_layer.currentText())
+        if not pvi_layer:
+            self._warn("Selezionare il layer PVI.")
+            return
+        if not self._ensure_pvi_layer_editable(pvi_layer):
+            return
+        if len(self.pvi_rows) < 2:
+            self.reload_pvi_from_layer()
+        if len(self.pvi_rows) < 2:
+            self._warn("Servono almeno 2 PVI esistenti per interpolare il nuovo punto.")
+            return
+
+        selected = d.tbl_pvi.currentRow()
+        if 0 <= selected < len(self.pvi_rows) - 1:
+            s0 = self.pvi_rows[selected].progressive
+            s1 = self.pvi_rows[selected + 1].progressive
+            new_prog = (s0 + s1) / 2.0
+        else:
+            new_prog = (self.pvi_rows[0].progressive + self.pvi_rows[-1].progressive) / 2.0
+        new_elev = self.vp_builder.interpolate_pvi_elevation(self.pvi_rows, new_prog)
+
+        xy = self.vp_builder.progressive_to_axis_point(new_prog, align.points)
+        if not xy:
+            self._warn("Impossibile determinare la posizione XY del nuovo PVI.")
+            return
+        feat = QgsFeature(pvi_layer.fields())
+        feat.setGeometry(QgsGeometry.fromPointXY(QgsPointXY(xy[0], xy[1])))
+        e_idx = pvi_layer.fields().indexFromName(d.cmb_pvi_elev_field.currentText())
+        c_idx = pvi_layer.fields().indexFromName(d.cmb_pvi_curve_field.currentText()) if d.cmb_pvi_curve_field.currentText() else -1
+        if e_idx < 0:
+            self._warn("Campo quota PVI non valido.")
+            return
+        feat.setAttribute(e_idx, float(new_elev))
+        if c_idx >= 0:
+            feat.setAttribute(c_idx, float(max(0.0, d.default_curve_length.value())))
+
+        if not pvi_layer.addFeature(feat):
+            self._warn("Inserimento feature PVI fallito nel layer selezionato.")
+            return
+        pvi_layer.triggerRepaint()
+        self.reload_pvi_from_layer()
+
+    def remove_selected_pvi(self):
+        d = self.dialog
+        if not d:
+            return
+        if len(self.pvi_rows) <= 2:
+            self._warn("Non è possibile scendere sotto 2 PVI.")
+            return
+        row_idx = d.tbl_pvi.currentRow()
+        if row_idx < 0 or row_idx >= len(self.pvi_rows):
+            self._warn("Selezionare una riga PVI da rimuovere.")
+            return
+        pvi_layer = self._layer(d.cmb_pvi_layer.currentText())
+        if not pvi_layer:
+            self._warn("Selezionare il layer PVI.")
+            return
+        if not self._ensure_pvi_layer_editable(pvi_layer):
+            return
+        feature_id = self.pvi_rows[row_idx].feature_id
+        if not pvi_layer.deleteFeature(feature_id):
+            self._warn("Cancellazione feature PVI fallita nel layer selezionato.")
+            return
+        pvi_layer.triggerRepaint()
+        self.reload_pvi_from_layer()
+
+    def _build_alignment(self):
+        if not self.dialog:
+            return None
+        axis = self._layer(self.dialog.cmb_axis.currentText())
+        if not axis:
+            self._warn("Selezionare il layer asse.")
+            return None
+        return AlignmentBuilder().build(axis, self.dialog.plan_radius_min.value(), self.dialog.axis_step.value())
+
+    def _ensure_pvi_layer_editable(self, layer) -> bool:
+        if layer.isEditable():
+            return True
+        if layer.startEditing():
+            if self.dialog:
+                self.dialog.append_log(f"Layer PVI '{layer.name()}' messo in modifica.")
+            return True
+        self._warn(f"Il layer PVI '{layer.name()}' non è modificabile.")
+        return False
+
+    def _write_pvi_row_to_layer(self, row: PviRow, update_geometry: bool = False) -> bool:
+        d = self.dialog
+        if not d:
+            return False
+        pvi_layer = self._layer(d.cmb_pvi_layer.currentText())
+        if not pvi_layer:
+            self._warn("Layer PVI non selezionato.")
+            return False
+        if not self._ensure_pvi_layer_editable(pvi_layer):
+            return False
+        e_idx = pvi_layer.fields().indexFromName(d.cmb_pvi_elev_field.currentText())
+        c_idx = pvi_layer.fields().indexFromName(d.cmb_pvi_curve_field.currentText()) if d.cmb_pvi_curve_field.currentText() else -1
+        if e_idx < 0:
+            self._warn("Campo quota PVI non valido.")
+            return False
+        if not pvi_layer.changeAttributeValue(row.feature_id, e_idx, float(row.elevation)):
+            self._warn("Aggiornamento quota PVI sul layer fallito.")
+            return False
+        if c_idx >= 0 and not pvi_layer.changeAttributeValue(row.feature_id, c_idx, float(max(0.0, row.curve_length))):
+            self._warn("Aggiornamento lunghezza curva PVI sul layer fallito.")
+            return False
+        if update_geometry:
+            align = self._build_alignment()
+            if not align:
+                return False
+            xy = self.vp_builder.progressive_to_axis_point(row.progressive, align.points)
+            if not xy:
+                self._warn("Impossibile aggiornare geometria PVI (progressiva->XY).")
+                return False
+            if not pvi_layer.changeGeometry(row.feature_id, QgsGeometry.fromPointXY(QgsPointXY(xy[0], xy[1]))):
+                self._warn("Aggiornamento geometria PVI sul layer fallito.")
+                return False
+        pvi_layer.triggerRepaint()
+        return True
 
     def rebuild_preview_profile(self, log_warnings: Optional[List[str]] = None):
         d = self.dialog
@@ -285,6 +435,7 @@ class RoadDesignerPlugin:
                 d.lbl_pvi_status.setText("Servono almeno 2 PVI validi")
                 return
             profile = self.vp_builder.build_from_pvi(align.progressive, terrain_axis, self.pvi_rows)
+            self.active_profile = profile
             pvi_points = [(r.progressive, r.elevation) for r in self.pvi_rows if r.enabled]
             d.preview.set_data(profile.progressive, profile.terrain_z, profile.project_z, pvi_points)
             msg = f"PVI caricati: {len(self.pvi_rows)}"
@@ -337,6 +488,7 @@ class RoadDesignerPlugin:
                     align.points,
                 )
                 d.append_log("Profilo longitudinale di progetto calcolato (automatico)")
+            self.active_profile = profile
             d.progress.setValue(45)
 
             sections = CrossSectionGenerator().generate(

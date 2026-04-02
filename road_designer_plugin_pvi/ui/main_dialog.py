@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import List, Sequence, Tuple
 
-from qgis.PyQt.QtCore import Qt
+from qgis.PyQt.QtCore import Qt, pyqtSignal
 from qgis.PyQt.QtGui import QColor, QPainter, QPen
 from qgis.PyQt.QtWidgets import (
     QAbstractItemView,
@@ -29,6 +29,8 @@ from qgis.PyQt.QtWidgets import (
 
 
 class ProfilePreviewWidget(QWidget):
+    pviDragged = pyqtSignal(int, float)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setMinimumHeight(260)
@@ -37,6 +39,10 @@ class ProfilePreviewWidget(QWidget):
         self._terrain: List[float] = []
         self._project: List[float] = []
         self._pvi: List[Tuple[float, float]] = []
+        self._drag_idx: int = -1
+        self._drag_hover_idx: int = -1
+        self._draw_rect = (0, 0, 0, 0)
+        self._z_range = (0.0, 1.0)
 
     def set_data(
         self,
@@ -49,6 +55,8 @@ class ProfilePreviewWidget(QWidget):
         self._terrain = list(terrain_z)
         self._project = list(project_z)
         self._pvi = list(pvi_points)
+        self._drag_idx = -1
+        self._drag_hover_idx = -1
         self.update()
 
     def clear_data(self):
@@ -56,6 +64,8 @@ class ProfilePreviewWidget(QWidget):
         self._terrain = []
         self._project = []
         self._pvi = []
+        self._drag_idx = -1
+        self._drag_hover_idx = -1
         self.update()
 
     def paintEvent(self, event):
@@ -75,6 +85,7 @@ class ProfilePreviewWidget(QWidget):
         bottom_margin = 48
         draw_w = max(1, self.width() - left_margin - right_margin)
         draw_h = max(1, self.height() - top_margin - bottom_margin)
+        self._draw_rect = (left_margin, top_margin, draw_w, draw_h)
 
         x_min = self._progressive[0]
         x_max = self._progressive[-1]
@@ -84,6 +95,7 @@ class ProfilePreviewWidget(QWidget):
         z_pad = max((z_max - z_min) * 0.06, 0.25)
         z_min -= z_pad
         z_max += z_pad
+        self._z_range = (z_min, z_max)
         if abs(x_max - x_min) < 1e-9 or abs(z_max - z_min) < 1e-9:
             painter.setPen(QColor("#666666"))
             painter.drawText(self.rect(), Qt.AlignCenter, "Range profilo insufficiente")
@@ -117,6 +129,14 @@ class ProfilePreviewWidget(QWidget):
         for s, z in self._pvi:
             x, y = map_pt(s, z)
             painter.drawEllipse(x - 3, y - 3, 6, 6)
+
+        if 0 <= self._drag_hover_idx < len(self._pvi):
+            hs, hz = self._pvi[self._drag_hover_idx]
+            hx, hy = map_pt(hs, hz)
+            painter.setPen(QPen(QColor("#8a1414"), 2))
+            painter.drawEllipse(hx - 5, hy - 5, 10, 10)
+            painter.setPen(QColor("#4a4a4a"))
+            painter.drawText(hx + 8, hy - 10, f"s={hs:.2f} m  z={hz:.2f} m")
 
     def _draw_line(self, painter, x_vals, y_vals, color, mapper):
         painter.setPen(QPen(color, 2))
@@ -225,6 +245,72 @@ class ProfilePreviewWidget(QWidget):
             painter.drawText(x - 35, y - 16, 70, 14, Qt.AlignCenter, label)
             last_text_x = x
 
+    def _map_y_to_elevation(self, y: float) -> float:
+        left, top, _draw_w, draw_h = self._draw_rect
+        z_min, z_max = self._z_range
+        if draw_h <= 0 or z_max <= z_min:
+            return z_min
+        y = max(top, min(top + draw_h, y))
+        ratio = (y - top) / draw_h
+        return z_max - ratio * (z_max - z_min)
+
+    def _find_pvi_at(self, pos) -> int:
+        if not self._pvi or not self._progressive:
+            return -1
+        left, top, draw_w, draw_h = self._draw_rect
+        x_min = self._progressive[0]
+        x_max = self._progressive[-1]
+        z_min, z_max = self._z_range
+        if draw_w <= 0 or draw_h <= 0 or x_max <= x_min or z_max <= z_min:
+            return -1
+
+        def map_pt(s: float, z: float) -> Tuple[float, float]:
+            x = left + ((s - x_min) / (x_max - x_min) * draw_w)
+            y = top + ((z_max - z) / (z_max - z_min) * draw_h)
+            return x, y
+
+        best_idx = -1
+        best_dist = 1.0e9
+        for idx, (s, z) in enumerate(self._pvi):
+            x, y = map_pt(s, z)
+            d2 = (x - pos.x()) ** 2 + (y - pos.y()) ** 2
+            if d2 < best_dist:
+                best_dist = d2
+                best_idx = idx
+        return best_idx if best_dist <= 100 else -1
+
+    def _event_pos(self, event):
+        return event.position() if hasattr(event, "position") else event.pos()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self._drag_idx = self._find_pvi_at(self._event_pos(event))
+            self._drag_hover_idx = self._drag_idx
+            self.update()
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self._drag_idx >= 0:
+            ev_pos = self._event_pos(event)
+            new_z = self._map_y_to_elevation(ev_pos.y())
+            s, _old_z = self._pvi[self._drag_idx]
+            self._pvi[self._drag_idx] = (s, new_z)
+            self._drag_hover_idx = self._drag_idx
+            self.pviDragged.emit(self._drag_idx, new_z)
+            self.update()
+        else:
+            hover_idx = self._find_pvi_at(self._event_pos(event))
+            if hover_idx != self._drag_hover_idx:
+                self._drag_hover_idx = hover_idx
+                self.update()
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self._drag_idx = -1
+            self.update()
+        super().mouseReleaseEvent(event)
+
 
 class MainDialog(QDialog):
     PVI_HEADERS = [
@@ -314,12 +400,17 @@ class MainDialog(QDialog):
         btns = QHBoxLayout()
         btns.addWidget(self.btn_reload_pvi)
         btns.addWidget(self.btn_reset_pvi)
+        self.btn_add_pvi = QPushButton("Aggiungi PVI")
+        self.btn_remove_pvi = QPushButton("Rimuovi PVI selezionato")
+        btns.addWidget(self.btn_add_pvi)
+        btns.addWidget(self.btn_remove_pvi)
         top.addLayout(btns, 5, 1)
         vl.addLayout(top)
 
         self.tbl_pvi = QTableWidget(0, len(self.PVI_HEADERS))
         self.tbl_pvi.setHorizontalHeaderLabels(self.PVI_HEADERS)
         self.tbl_pvi.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.tbl_pvi.setSelectionMode(QAbstractItemView.SingleSelection)
         self.tbl_pvi.setAlternatingRowColors(True)
         self.tbl_pvi.verticalHeader().setVisible(False)
         self.tbl_pvi.setMinimumHeight(200)
@@ -650,4 +741,7 @@ class MainDialog(QDialog):
         self.default_curve_length.setEnabled(enabled)
         self.btn_reload_pvi.setEnabled(enabled)
         self.btn_reset_pvi.setEnabled(enabled)
+        self.btn_add_pvi.setEnabled(enabled)
+        self.btn_remove_pvi.setEnabled(enabled)
         self.tbl_pvi.setEnabled(enabled)
+        self.preview.setEnabled(enabled)
