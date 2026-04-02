@@ -105,23 +105,83 @@ class RoadDesignerPlugin:
         if is_pvi:
             self.rebuild_preview_profile()
 
-    def _on_pvi_layer_changed(self):
+    def _on_pvi_layer_changed(self, _index=None, preferred_elev_field: Optional[str] = None, preferred_curve_field: Optional[str] = None):
         d = self.dialog
         if not d:
             return
+        layer = self._layer(d.cmb_pvi_layer.currentText())
+        self._populate_pvi_field_combos(
+            layer,
+            preferred_elev_field=preferred_elev_field,
+            preferred_curve_field=preferred_curve_field,
+        )
+
+    def _populate_pvi_field_combos(
+        self,
+        layer,
+        preferred_elev_field: Optional[str] = None,
+        preferred_curve_field: Optional[str] = None,
+    ) -> None:
+        d = self.dialog
+        if not d:
+            return
+        current_elev = d.cmb_pvi_elev_field.currentText()
+        current_curve = d.cmb_pvi_curve_field.currentText()
         d.cmb_pvi_elev_field.clear()
         d.cmb_pvi_curve_field.clear()
         d.cmb_pvi_curve_field.addItem("")
-        layer = self._layer(d.cmb_pvi_layer.currentText())
         if not layer:
             return
-        for field in layer.fields():
+        fields = list(layer.fields())
+        for field in fields:
             name = field.name()
             d.cmb_pvi_elev_field.addItem(name)
             d.cmb_pvi_curve_field.addItem(name)
-        z_idx = d.cmb_pvi_elev_field.findText("z")
-        if z_idx >= 0:
-            d.cmb_pvi_elev_field.setCurrentIndex(z_idx)
+        available_names = [f.name() for f in fields]
+        elev_target = self._choose_preferred_field(
+            available_names,
+            preferred=preferred_elev_field,
+            current=current_elev,
+            fallback=self._default_elevation_field_name(fields),
+        )
+        curve_target = self._choose_preferred_field(
+            available_names,
+            preferred=preferred_curve_field,
+            current=current_curve,
+            fallback="",
+            allow_blank=True,
+        )
+        d.select_combo_by_text(d.cmb_pvi_elev_field, elev_target)
+        d.select_combo_by_text(d.cmb_pvi_curve_field, curve_target)
+
+    def _choose_preferred_field(
+        self,
+        available_names: List[str],
+        preferred: Optional[str],
+        current: Optional[str],
+        fallback: str,
+        allow_blank: bool = False,
+    ) -> str:
+        for candidate in (preferred, current):
+            if candidate and candidate in available_names:
+                return candidate
+        if allow_blank and not preferred and not current:
+            return ""
+        if fallback and fallback in available_names:
+            return fallback
+        return ""
+
+    def _default_elevation_field_name(self, fields) -> str:
+        names = [f.name() for f in fields]
+        if "z" in names:
+            return "z"
+        for field in fields:
+            try:
+                if field.isNumeric():
+                    return field.name()
+            except Exception:
+                continue
+        return names[0] if names else ""
 
     def reload_pvi_from_layer(self):
         d = self.dialog
@@ -420,9 +480,13 @@ class RoadDesignerPlugin:
             return
         try:
             sm = SettingsManager()
-            sm.apply_ui_state(d, sm.load_from_json(path))
+            state = sm.load_from_json(path)
+            sm.apply_ui_state(d, state)
             self._on_mode_changed()
-            self._on_pvi_layer_changed()
+            self._on_pvi_layer_changed(
+                preferred_elev_field=str(state.get("pvi_elevation_field", "") or ""),
+                preferred_curve_field=str(state.get("pvi_curve_length_field", "") or ""),
+            )
             self._info("Parametri caricati")
         except Exception as exc:
             self._warn(f"Caricamento JSON fallito: {exc}")
