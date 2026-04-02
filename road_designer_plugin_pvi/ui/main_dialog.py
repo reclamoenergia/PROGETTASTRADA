@@ -19,6 +19,8 @@ from qgis.PyQt.QtWidgets import (
     QPushButton,
     QPlainTextEdit,
     QProgressBar,
+    QScrollArea,
+    QSizePolicy,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -29,7 +31,8 @@ from qgis.PyQt.QtWidgets import (
 class ProfilePreviewWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMinimumHeight(220)
+        self.setMinimumHeight(260)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self._progressive: List[float] = []
         self._terrain: List[float] = []
         self._project: List[float] = []
@@ -58,6 +61,7 @@ class ProfilePreviewWidget(QWidget):
     def paintEvent(self, event):
         super().paintEvent(event)
         painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing, True)
         painter.fillRect(self.rect(), QColor("white"))
 
         if not self._progressive or not self._terrain or not self._project:
@@ -65,30 +69,49 @@ class ProfilePreviewWidget(QWidget):
             painter.drawText(self.rect(), Qt.AlignCenter, "Anteprima profilo non disponibile")
             return
 
-        margin = 26
-        draw_w = max(1, self.width() - margin * 2)
-        draw_h = max(1, self.height() - margin * 2)
+        left_margin = 70
+        right_margin = 24
+        top_margin = 18
+        bottom_margin = 48
+        draw_w = max(1, self.width() - left_margin - right_margin)
+        draw_h = max(1, self.height() - top_margin - bottom_margin)
 
         x_min = self._progressive[0]
         x_max = self._progressive[-1]
         z_all = self._terrain + self._project + [z for _, z in self._pvi]
         z_min = min(z_all)
         z_max = max(z_all)
+        z_pad = max((z_max - z_min) * 0.06, 0.25)
+        z_min -= z_pad
+        z_max += z_pad
         if abs(x_max - x_min) < 1e-9 or abs(z_max - z_min) < 1e-9:
             painter.setPen(QColor("#666666"))
             painter.drawText(self.rect(), Qt.AlignCenter, "Range profilo insufficiente")
             return
 
         def map_pt(s: float, z: float) -> Tuple[int, int]:
-            x = margin + int((s - x_min) / (x_max - x_min) * draw_w)
-            y = margin + int((z_max - z) / (z_max - z_min) * draw_h)
+            x = left_margin + int((s - x_min) / (x_max - x_min) * draw_w)
+            y = top_margin + int((z_max - z) / (z_max - z_min) * draw_h)
             return x, y
 
+        self._draw_grid_and_axes(
+            painter,
+            x_min,
+            x_max,
+            z_min,
+            z_max,
+            left_margin,
+            top_margin,
+            draw_w,
+            draw_h,
+        )
+
         painter.setPen(QPen(QColor("#dddddd"), 1))
-        painter.drawRect(margin, margin, draw_w, draw_h)
+        painter.drawRect(left_margin, top_margin, draw_w, draw_h)
 
         self._draw_line(painter, self._progressive, self._terrain, QColor("#808080"), map_pt)
         self._draw_line(painter, self._progressive, self._project, QColor("#0d5fb8"), map_pt)
+        self._draw_slope_labels(painter, map_pt)
 
         painter.setPen(QPen(QColor("#cc2d2d"), 2))
         for s, z in self._pvi:
@@ -101,6 +124,106 @@ class ProfilePreviewWidget(QWidget):
             x0, y0 = mapper(x_vals[i - 1], y_vals[i - 1])
             x1, y1 = mapper(x_vals[i], y_vals[i])
             painter.drawLine(x0, y0, x1, y1)
+
+    def _draw_grid_and_axes(
+        self,
+        painter: QPainter,
+        x_min: float,
+        x_max: float,
+        z_min: float,
+        z_max: float,
+        left: int,
+        top: int,
+        draw_w: int,
+        draw_h: int,
+    ):
+        x_ticks = self._build_ticks(x_min, x_max, 7)
+        z_ticks = self._build_ticks(z_min, z_max, 6)
+
+        painter.setPen(QPen(QColor("#efefef"), 1))
+        for x_val in x_ticks:
+            ratio = (x_val - x_min) / (x_max - x_min)
+            x = left + int(ratio * draw_w)
+            painter.drawLine(x, top, x, top + draw_h)
+        for z_val in z_ticks:
+            ratio = (z_max - z_val) / (z_max - z_min)
+            y = top + int(ratio * draw_h)
+            painter.drawLine(left, y, left + draw_w, y)
+
+        painter.setPen(QPen(QColor("#707070"), 1))
+        painter.drawRect(left, top, draw_w, draw_h)
+
+        for x_val in x_ticks:
+            ratio = (x_val - x_min) / (x_max - x_min)
+            x = left + int(ratio * draw_w)
+            painter.drawLine(x, top + draw_h, x, top + draw_h + 4)
+            painter.drawText(x - 32, top + draw_h + 18, 64, 16, Qt.AlignHCenter, f"{x_val:.1f}")
+
+        for z_val in z_ticks:
+            ratio = (z_max - z_val) / (z_max - z_min)
+            y = top + int(ratio * draw_h)
+            painter.drawLine(left - 4, y, left, y)
+            painter.drawText(4, y - 8, left - 10, 16, Qt.AlignRight | Qt.AlignVCenter, f"{z_val:.2f}")
+
+        painter.setPen(QColor("#444444"))
+        painter.drawText(left + (draw_w // 2) - 80, top + draw_h + 34, 160, 16, Qt.AlignCenter, "Progressiva [m]")
+        painter.save()
+        painter.translate(20, top + draw_h // 2)
+        painter.rotate(-90)
+        painter.drawText(-70, -6, 140, 16, Qt.AlignCenter, "Quota [m]")
+        painter.restore()
+
+    def _build_ticks(self, min_val: float, max_val: float, target_count: int) -> List[float]:
+        if target_count < 2 or max_val <= min_val:
+            return [min_val, max_val]
+
+        raw_step = (max_val - min_val) / (target_count - 1)
+        magnitude = 10 ** int(f"{raw_step:e}".split("e")[1])
+        norm = raw_step / magnitude
+        if norm <= 1:
+            step = 1 * magnitude
+        elif norm <= 2:
+            step = 2 * magnitude
+        elif norm <= 5:
+            step = 5 * magnitude
+        else:
+            step = 10 * magnitude
+
+        first = int(min_val / step) * step
+        if first < min_val:
+            first += step
+        ticks = [min_val]
+        val = first
+        guard = 0
+        while val < max_val and guard < 200:
+            ticks.append(val)
+            val += step
+            guard += 1
+        ticks.append(max_val)
+        return sorted(set(ticks))
+
+    def _draw_slope_labels(self, painter: QPainter, mapper):
+        if len(self._pvi) < 2:
+            return
+
+        painter.setPen(QColor("#1f4a8a"))
+        min_x_gap = 56
+        last_text_x = -10_000
+        for i in range(len(self._pvi) - 1):
+            s0, z0 = self._pvi[i]
+            s1, z1 = self._pvi[i + 1]
+            ds = s1 - s0
+            if abs(ds) < 1e-6:
+                continue
+            slope_pct = ((z1 - z0) / ds) * 100.0
+            label = f"{slope_pct:+.2f}%"
+            xm = (s0 + s1) / 2.0
+            zm = (z0 + z1) / 2.0
+            x, y = mapper(xm, zm)
+            if abs(x - last_text_x) < min_x_gap:
+                continue
+            painter.drawText(x - 35, y - 16, 70, 14, Qt.AlignCenter, label)
+            last_text_x = x
 
 
 class MainDialog(QDialog):
@@ -117,14 +240,23 @@ class MainDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Road Designer Plugin PVI")
-        self.resize(920, 960)
+        self.resize(920, 840)
         root = QVBoxLayout(self)
-        root.addWidget(self._build_input_group())
-        root.addWidget(self._build_vertical_profile_group())
-        root.addWidget(self._build_geom_group())
-        root.addWidget(self._build_sampling_group())
-        root.addWidget(self._build_output_group())
-        root.addWidget(self._build_json_group())
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+
+        form_container = QWidget()
+        form_layout = QVBoxLayout(form_container)
+        form_layout.addWidget(self._build_input_group())
+        form_layout.addWidget(self._build_vertical_profile_group())
+        form_layout.addWidget(self._build_geom_group())
+        form_layout.addWidget(self._build_sampling_group())
+        form_layout.addWidget(self._build_output_group())
+        form_layout.addWidget(self._build_json_group())
+        form_layout.addStretch(1)
+        scroll_area.setWidget(form_container)
+        root.addWidget(scroll_area, 1)
         root.addWidget(self._build_actions_group())
 
     def _build_input_group(self):
@@ -189,9 +321,13 @@ class MainDialog(QDialog):
         self.tbl_pvi.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.tbl_pvi.setAlternatingRowColors(True)
         self.tbl_pvi.verticalHeader().setVisible(False)
+        self.tbl_pvi.setMinimumHeight(200)
+        self.tbl_pvi.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.MinimumExpanding)
         vl.addWidget(self.tbl_pvi)
 
         self.preview = ProfilePreviewWidget()
+        self.preview.setMinimumHeight(260)
+        self.preview.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.MinimumExpanding)
         vl.addWidget(self.preview)
 
         self.lbl_pvi_status = QLabel("")
