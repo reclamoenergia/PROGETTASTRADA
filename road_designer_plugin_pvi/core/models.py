@@ -123,6 +123,13 @@ class PluginSettings:
     axis_layer_name: str = ""
     polygon_layer_name: str = ""
     forced_points_layer_name: str = ""
+    terrain_source_mode: str = "raster"
+    tin_contour_interval: float = 1.0
+    tin_processing_buffer: float = 120.0
+    tin_simplify_tolerance: float = 0.0
+    tin_add_contours_layer: bool = False
+    tin_add_triangles_layer: bool = False
+    tin_use_session_cache: bool = True
     profile_mode: str = "automatic"
     pvi_layer_name: str = ""
     pvi_elevation_field: str = ""

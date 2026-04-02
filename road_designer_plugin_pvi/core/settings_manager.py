@@ -27,6 +27,9 @@ class SettingsManager:
         "section_scale",
         "section_vertical_exaggeration",
         "section_quote_step",
+        "tin_contour_interval",
+        "tin_processing_buffer",
+        "tin_simplify_tolerance",
         "pvi_default_curve_length",
     }
 
@@ -60,6 +63,13 @@ class SettingsManager:
             axis_layer_name=dialog.cmb_axis.currentText(),
             polygon_layer_name=dialog.cmb_polygon.currentText(),
             forced_points_layer_name=dialog.cmb_forced.currentText(),
+            terrain_source_mode="tin" if dialog.cmb_terrain_source.currentIndex() == 1 else "raster",
+            tin_contour_interval=dialog.tin_contour_interval.value(),
+            tin_processing_buffer=dialog.tin_processing_buffer.value(),
+            tin_simplify_tolerance=dialog.tin_simplify_tolerance.value(),
+            tin_add_contours_layer=dialog.chk_tin_add_contours.isChecked(),
+            tin_add_triangles_layer=dialog.chk_tin_add_triangles.isChecked(),
+            tin_use_session_cache=dialog.chk_tin_cache.isChecked(),
             profile_mode=str(dialog.cmb_profile_mode.currentData() or "automatic"),
             pvi_layer_name=dialog.cmb_pvi_layer.currentText(),
             pvi_elevation_field=dialog.cmb_pvi_elev_field.currentText(),
@@ -98,6 +108,13 @@ class SettingsManager:
         dialog.select_combo_by_text(dialog.cmb_axis, s.axis_layer_name)
         dialog.select_combo_by_text(dialog.cmb_polygon, s.polygon_layer_name)
         dialog.select_combo_by_text(dialog.cmb_forced, s.forced_points_layer_name)
+        dialog.cmb_terrain_source.setCurrentIndex(1 if str(s.terrain_source_mode).lower() == "tin" else 0)
+        dialog.tin_contour_interval.setValue(float(s.tin_contour_interval))
+        dialog.tin_processing_buffer.setValue(float(s.tin_processing_buffer))
+        dialog.tin_simplify_tolerance.setValue(float(s.tin_simplify_tolerance))
+        dialog.chk_tin_add_contours.setChecked(bool(s.tin_add_contours_layer))
+        dialog.chk_tin_add_triangles.setChecked(bool(s.tin_add_triangles_layer))
+        dialog.chk_tin_cache.setChecked(bool(s.tin_use_session_cache))
         idx = dialog.cmb_profile_mode.findData(s.profile_mode)
         if idx >= 0:
             dialog.cmb_profile_mode.setCurrentIndex(idx)
@@ -148,6 +165,8 @@ class SettingsManager:
             "section_quote_step",
             "cut_slope_hv",
             "fill_slope_hv",
+            "tin_contour_interval",
+            "tin_processing_buffer",
         ):
             _require_positive(key)
 
@@ -171,4 +190,6 @@ class SettingsManager:
         pvi_default_curve = float(clean.get("pvi_default_curve_length", 0.0))
         if pvi_default_curve < 0:
             raise ValueError("pvi_default_curve_length non può essere negativo.")
+        if float(clean.get("tin_simplify_tolerance", 0.0)) < 0:
+            raise ValueError("tin_simplify_tolerance deve essere >= 0.")
         return clean
