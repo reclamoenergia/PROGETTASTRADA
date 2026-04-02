@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+from typing import List, Sequence, Tuple
+
+from qgis.PyQt.QtCore import Qt
+from qgis.PyQt.QtGui import QColor, QPainter, QPen
 from qgis.PyQt.QtWidgets import (
+    QAbstractItemView,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -14,17 +19,108 @@ from qgis.PyQt.QtWidgets import (
     QPushButton,
     QPlainTextEdit,
     QProgressBar,
+    QTableWidget,
+    QTableWidgetItem,
     QVBoxLayout,
+    QWidget,
 )
 
 
+class ProfilePreviewWidget(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumHeight(220)
+        self._progressive: List[float] = []
+        self._terrain: List[float] = []
+        self._project: List[float] = []
+        self._pvi: List[Tuple[float, float]] = []
+
+    def set_data(
+        self,
+        progressive: Sequence[float],
+        terrain_z: Sequence[float],
+        project_z: Sequence[float],
+        pvi_points: Sequence[Tuple[float, float]],
+    ):
+        self._progressive = list(progressive)
+        self._terrain = list(terrain_z)
+        self._project = list(project_z)
+        self._pvi = list(pvi_points)
+        self.update()
+
+    def clear_data(self):
+        self._progressive = []
+        self._terrain = []
+        self._project = []
+        self._pvi = []
+        self.update()
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), QColor("white"))
+
+        if not self._progressive or not self._terrain or not self._project:
+            painter.setPen(QColor("#666666"))
+            painter.drawText(self.rect(), Qt.AlignCenter, "Anteprima profilo non disponibile")
+            return
+
+        margin = 26
+        draw_w = max(1, self.width() - margin * 2)
+        draw_h = max(1, self.height() - margin * 2)
+
+        x_min = self._progressive[0]
+        x_max = self._progressive[-1]
+        z_all = self._terrain + self._project + [z for _, z in self._pvi]
+        z_min = min(z_all)
+        z_max = max(z_all)
+        if abs(x_max - x_min) < 1e-9 or abs(z_max - z_min) < 1e-9:
+            painter.setPen(QColor("#666666"))
+            painter.drawText(self.rect(), Qt.AlignCenter, "Range profilo insufficiente")
+            return
+
+        def map_pt(s: float, z: float) -> Tuple[int, int]:
+            x = margin + int((s - x_min) / (x_max - x_min) * draw_w)
+            y = margin + int((z_max - z) / (z_max - z_min) * draw_h)
+            return x, y
+
+        painter.setPen(QPen(QColor("#dddddd"), 1))
+        painter.drawRect(margin, margin, draw_w, draw_h)
+
+        self._draw_line(painter, self._progressive, self._terrain, QColor("#808080"), map_pt)
+        self._draw_line(painter, self._progressive, self._project, QColor("#0d5fb8"), map_pt)
+
+        painter.setPen(QPen(QColor("#cc2d2d"), 2))
+        for s, z in self._pvi:
+            x, y = map_pt(s, z)
+            painter.drawEllipse(x - 3, y - 3, 6, 6)
+
+    def _draw_line(self, painter, x_vals, y_vals, color, mapper):
+        painter.setPen(QPen(color, 2))
+        for i in range(1, min(len(x_vals), len(y_vals))):
+            x0, y0 = mapper(x_vals[i - 1], y_vals[i - 1])
+            x1, y1 = mapper(x_vals[i], y_vals[i])
+            painter.drawLine(x0, y0, x1, y1)
+
+
 class MainDialog(QDialog):
+    PVI_HEADERS = [
+        "#",
+        "Progressiva",
+        "Quota",
+        "L curva [m]",
+        "Pendenza in [%]",
+        "Pendenza out [%]",
+        "Stato",
+    ]
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Road Designer Plugin PVI")
-        self.resize(760, 800)
+        self.resize(920, 960)
         root = QVBoxLayout(self)
         root.addWidget(self._build_input_group())
+        root.addWidget(self._build_vertical_profile_group())
         root.addWidget(self._build_geom_group())
         root.addWidget(self._build_sampling_group())
         root.addWidget(self._build_output_group())
@@ -44,7 +140,7 @@ class MainDialog(QDialog):
         gl.addWidget(self.cmb_axis, 1, 1)
         gl.addWidget(QLabel("Poligono viabilità"), 2, 0)
         gl.addWidget(self.cmb_polygon, 2, 1)
-        gl.addWidget(QLabel("Punti quota (z)"), 3, 0)
+        gl.addWidget(QLabel("Punti quota (z) automatico"), 3, 0)
         gl.addWidget(self.cmb_forced, 3, 1)
         return gb
 
@@ -55,6 +151,52 @@ class MainDialog(QDialog):
         s.setSingleStep(step)
         s.setValue(value)
         return s
+
+    def _build_vertical_profile_group(self):
+        gb = QGroupBox("PROFILO VERTICALE")
+        vl = QVBoxLayout(gb)
+
+        top = QGridLayout()
+        self.cmb_profile_mode = QComboBox()
+        self.cmb_profile_mode.addItem("Automatico (attuale)", "automatic")
+        self.cmb_profile_mode.addItem("Profilo da PVI geometrici", "pvi")
+        self.cmb_pvi_layer = QComboBox()
+        self.cmb_pvi_elev_field = QComboBox()
+        self.cmb_pvi_curve_field = QComboBox()
+        self.cmb_pvi_curve_field.addItem("")
+        self.default_curve_length = self._spin(0.0, 0.0, 10000.0, 1.0)
+        self.btn_reload_pvi = QPushButton("Ricarica PVI da layer")
+        self.btn_reset_pvi = QPushButton("Reset modifiche PVI")
+
+        top.addWidget(QLabel("Modalità"), 0, 0)
+        top.addWidget(self.cmb_profile_mode, 0, 1)
+        top.addWidget(QLabel("Layer punti PVI"), 1, 0)
+        top.addWidget(self.cmb_pvi_layer, 1, 1)
+        top.addWidget(QLabel("Campo quota"), 2, 0)
+        top.addWidget(self.cmb_pvi_elev_field, 2, 1)
+        top.addWidget(QLabel("Campo lunghezza curva"), 3, 0)
+        top.addWidget(self.cmb_pvi_curve_field, 3, 1)
+        top.addWidget(QLabel("Lunghezza curva default [m]"), 4, 0)
+        top.addWidget(self.default_curve_length, 4, 1)
+        btns = QHBoxLayout()
+        btns.addWidget(self.btn_reload_pvi)
+        btns.addWidget(self.btn_reset_pvi)
+        top.addLayout(btns, 5, 1)
+        vl.addLayout(top)
+
+        self.tbl_pvi = QTableWidget(0, len(self.PVI_HEADERS))
+        self.tbl_pvi.setHorizontalHeaderLabels(self.PVI_HEADERS)
+        self.tbl_pvi.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.tbl_pvi.setAlternatingRowColors(True)
+        self.tbl_pvi.verticalHeader().setVisible(False)
+        vl.addWidget(self.tbl_pvi)
+
+        self.preview = ProfilePreviewWidget()
+        vl.addWidget(self.preview)
+
+        self.lbl_pvi_status = QLabel("")
+        vl.addWidget(self.lbl_pvi_status)
+        return gb
 
     def _build_geom_group(self):
         gb = QGroupBox("PARAMETRI GEOMETRICI")
@@ -174,3 +316,12 @@ class MainDialog(QDialog):
         idx = combo.findText(text)
         if idx >= 0:
             combo.setCurrentIndex(idx)
+
+    def set_pvi_table_enabled(self, enabled: bool):
+        self.cmb_pvi_layer.setEnabled(enabled)
+        self.cmb_pvi_elev_field.setEnabled(enabled)
+        self.cmb_pvi_curve_field.setEnabled(enabled)
+        self.default_curve_length.setEnabled(enabled)
+        self.btn_reload_pvi.setEnabled(enabled)
+        self.btn_reset_pvi.setEnabled(enabled)
+        self.tbl_pvi.setEnabled(enabled)

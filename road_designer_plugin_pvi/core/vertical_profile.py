@@ -2,12 +2,19 @@ from __future__ import annotations
 
 import math
 import logging
-from typing import Dict, List, Optional
+from dataclasses import dataclass
+from typing import Dict, List, Optional, Sequence, Tuple
 
 from qgis.core import QgsGeometry, QgsPointXY, QgsVectorLayer
 
-from .models import ProfileData
+from .models import ProfileData, PviRow
 from ..utils.math_utils import clamp
+
+
+@dataclass
+class PviLoadResult:
+    rows: List[PviRow]
+    warnings: List[str]
 
 
 class VerticalProfileBuilder:
@@ -34,6 +41,139 @@ class VerticalProfileBuilder:
             z[i] = zp
         z = self._limit_slopes(progressive, z, max_slope)
         return ProfileData(progressive=progressive, terrain_z=terrain_z, project_z=z)
+
+    def build_from_pvi(self, progressive: Sequence[float], terrain_z: Sequence[float], pvi_rows: Sequence[PviRow]) -> ProfileData:
+        rows = [r for r in pvi_rows if r.enabled]
+        if len(rows) < 2:
+            raise ValueError("Servono almeno 2 PVI validi per costruire il profilo.")
+        rows = sorted(rows, key=lambda r: r.progressive)
+
+        proj: List[float] = []
+        for s in progressive:
+            proj.append(self._interpolate_project_z(float(s), rows))
+        return ProfileData(progressive=list(progressive), terrain_z=list(terrain_z), project_z=proj)
+
+    def load_pvi_rows(
+        self,
+        layer: Optional[QgsVectorLayer],
+        axis_points: Sequence[Tuple[float, float]],
+        elevation_field: str,
+        curve_field: str,
+        default_curve_length: float,
+    ) -> PviLoadResult:
+        warnings: List[str] = []
+        if not layer:
+            return PviLoadResult(rows=[], warnings=["Layer PVI non selezionato."])
+        if not axis_points:
+            return PviLoadResult(rows=[], warnings=["Asse non disponibile: impossibile proiettare i PVI."])
+
+        e_idx = layer.fields().indexFromName(elevation_field)
+        if e_idx < 0:
+            return PviLoadResult(rows=[], warnings=["Campo quota PVI non valido."])
+        c_idx = layer.fields().indexFromName(curve_field) if curve_field else -1
+
+        axis_geom = QgsGeometry.fromPolylineXY([QgsPointXY(x, y) for x, y in axis_points])
+        if axis_geom.isEmpty() or axis_geom.length() <= 0:
+            return PviLoadResult(rows=[], warnings=["Geometria asse non valida."])
+
+        rows: List[PviRow] = []
+        for feat in layer.getFeatures():
+            geom = feat.geometry()
+            if geom.isEmpty():
+                continue
+            try:
+                pt = geom.asPoint()
+                z = float(feat[e_idx])
+            except Exception:
+                warnings.append(f"Feature PVI {feat.id()} ignorata: quota non valida.")
+                continue
+
+            curve_len = float(default_curve_length)
+            if c_idx >= 0:
+                val = feat[c_idx]
+                if val not in (None, ""):
+                    try:
+                        curve_len = float(val)
+                    except Exception:
+                        warnings.append(f"Feature PVI {feat.id()} con lunghezza curva non valida: default applicato.")
+
+            nearest = axis_geom.nearestPoint(QgsGeometry.fromPointXY(QgsPointXY(pt.x(), pt.y())))
+            if nearest.isEmpty():
+                continue
+            s = float(axis_geom.lineLocatePoint(nearest))
+            rows.append(
+                PviRow(
+                    feature_id=int(feat.id()),
+                    progressive=s,
+                    elevation=z,
+                    curve_length=max(0.0, curve_len),
+                    enabled=True,
+                    source_label=str(feat.id()),
+                )
+            )
+
+        rows.sort(key=lambda r: r.progressive)
+        near_eps = 1e-3
+        for i in range(1, len(rows)):
+            if abs(rows[i].progressive - rows[i - 1].progressive) <= near_eps:
+                warnings.append(
+                    "Progressive duplicate/quasi duplicate rilevate "
+                    f"({rows[i - 1].progressive:.3f} m e {rows[i].progressive:.3f} m)."
+                )
+        if len(rows) < 2:
+            warnings.append("Servono almeno 2 PVI validi dopo il caricamento.")
+
+        return PviLoadResult(rows=rows, warnings=warnings)
+
+    def recompute_pvi_diagnostics(self, rows: Sequence[PviRow], max_slope_pct: float) -> List[PviRow]:
+        max_slope = max_slope_pct / 100.0
+        out = sorted([r for r in rows], key=lambda r: r.progressive)
+        for i, row in enumerate(out):
+            warn = []
+            if row.curve_length < 0:
+                warn.append("L curva < 0")
+            if i > 0:
+                ds = row.progressive - out[i - 1].progressive
+                if ds <= 1e-9:
+                    warn.append("Progressiva duplicata")
+                else:
+                    slope = (row.elevation - out[i - 1].elevation) / ds
+                    if abs(slope) > max_slope + 1e-6:
+                        warn.append("Pendenza > limite")
+            row.warning = "; ".join(warn)
+        return out
+
+    def incoming_slope_pct(self, rows: Sequence[PviRow], idx: int) -> Optional[float]:
+        if idx <= 0 or idx >= len(rows):
+            return None
+        ds = rows[idx].progressive - rows[idx - 1].progressive
+        if ds <= 1e-9:
+            return None
+        return (rows[idx].elevation - rows[idx - 1].elevation) / ds * 100.0
+
+    def outgoing_slope_pct(self, rows: Sequence[PviRow], idx: int) -> Optional[float]:
+        if idx < 0 or idx >= len(rows) - 1:
+            return None
+        ds = rows[idx + 1].progressive - rows[idx].progressive
+        if ds <= 1e-9:
+            return None
+        return (rows[idx + 1].elevation - rows[idx].elevation) / ds * 100.0
+
+    def _interpolate_project_z(self, s: float, rows: Sequence[PviRow]) -> float:
+        if s <= rows[0].progressive:
+            return rows[0].elevation
+        if s >= rows[-1].progressive:
+            return rows[-1].elevation
+        for i in range(1, len(rows)):
+            r0, r1 = rows[i - 1], rows[i]
+            if r1.progressive >= s:
+                ds = r1.progressive - r0.progressive
+                if ds <= 1e-9:
+                    return r1.elevation
+                t = (s - r0.progressive) / ds
+                # Hook per futura curva verticale: sostituire interpolazione lineare.
+                return r0.elevation + (r1.elevation - r0.elevation) * t
+        return rows[-1].elevation
 
     def _forced_by_progressive(
         self,

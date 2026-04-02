@@ -58,6 +58,18 @@ class ProfileData:
     project_z: List[float]
 
 
+
+
+@dataclass
+class PviRow:
+    feature_id: int
+    progressive: float
+    elevation: float
+    curve_length: float = 0.0
+    enabled: bool = True
+    source_label: str = ""
+    warning: str = ""
+
 @dataclass
 class EarthworkInterval:
     section_i: int
@@ -111,6 +123,11 @@ class PluginSettings:
     axis_layer_name: str = ""
     polygon_layer_name: str = ""
     forced_points_layer_name: str = ""
+    profile_mode: str = "automatic"
+    pvi_layer_name: str = ""
+    pvi_elevation_field: str = ""
+    pvi_curve_length_field: str = ""
+    pvi_default_curve_length: float = 0.0
 
     def to_dict(self) -> Dict[str, object]:
         return self.__dict__.copy()
