@@ -87,7 +87,6 @@ class DxfExporter:
     def is_ezdxf_available() -> bool:
         try:
             import ezdxf  # type: ignore
-
             return ezdxf is not None
         except ImportError:
             return False
@@ -335,18 +334,26 @@ class DxfExporter:
     def _draw_profile_table(self, msp, marks: List[dict], left: float, right: float, top: float, bottom: float) -> None:
         rows = ["SEZIONE", "PROGRESSIVA", "QUOTA TERRENO", "QUOTA PROGETTO"]
         height = top - bottom
-        row_h = height / max(1, len(rows))
+        row_h = max(6.0, height / max(1, len(rows)))
         label_w = 52.0
         table_left = left
         col_left = table_left + label_w
         table_right = right
-        text_h = max(2.1, min(2.8, row_h * 0.36))
+        text_h = max(2.4, min(3.2, row_h * 0.42))
+
         msp.add_lwpolyline(
-            [(table_left, top), (table_right, top), (table_right, bottom), (table_left, bottom), (table_left, top)],
+            [
+                (table_left, top),
+                (table_right, top),
+                (table_right, bottom),
+                (table_left, bottom),
+                (table_left, top),
+            ],
             close=True,
             dxfattribs={"layer": "PROF_TABLE"},
         )
         msp.add_line((col_left, top), (col_left, bottom), dxfattribs={"layer": "PROF_TABLE"})
+
         for ridx in range(1, len(rows)):
             y = top - ridx * row_h
             msp.add_line((table_left, y), (table_right, y), dxfattribs={"layer": "PROF_TABLE"})
@@ -362,8 +369,12 @@ class DxfExporter:
             boundaries.append(table_right)
 
         for ridx, label in enumerate(rows):
-            y = top - (ridx + 0.5) * row_h
-            msp.add_text(label, dxfattribs={"height": text_h, "layer": "PROF_TEXT"}).set_placement((table_left + 1.5, y), align="MIDDLE_LEFT")
+            y = top - (ridx + 0.68) * row_h
+            try:
+                txt = msp.add_text(label, dxfattribs={"height": text_h, "layer": "PROF_TEXT"})
+                txt.set_placement((table_left + 1.5, y))
+            except Exception:
+                pass
 
         for idx, m in enumerate(marks):
             sec = m["section"]
@@ -371,10 +382,21 @@ class DxfExporter:
                 x = (boundaries[idx] + boundaries[idx + 1]) * 0.5
             else:
                 x = max(col_left, min(table_right, m["x"]))
-            values = [f"S{sec.index}", f"{sec.progressive:.2f}", f"{m['terrain_z']:.2f}", f"{m['project_z']:.2f}"]
+
+            values = [
+                f"S{sec.index}",
+                f"{sec.progressive:.2f}",
+                f"{m['terrain_z']:.2f}",
+                f"{m['project_z']:.2f}",
+            ]
+
             for ridx, val in enumerate(values):
-                y = top - (ridx + 0.5) * row_h
-                msp.add_text(val, dxfattribs={"height": text_h, "layer": "PROF_TEXT"}).set_placement((x, y), align="MIDDLE_CENTER")
+                y = top - (ridx + 0.68) * row_h
+                try:
+                    txt = msp.add_text(val, dxfattribs={"height": text_h, "layer": "PROF_TEXT"})
+                    txt.set_placement((x - text_h * 1.0, y))
+                except Exception:
+                    pass
 
     def _draw_section_sheets(
         self,
@@ -670,14 +692,18 @@ class DxfExporter:
         if self._is_valid_point((ax0, ay0)) and self._is_valid_point((ax0, ay1)):
             msp.add_line((ax0, ay0), (ax0, ay1), dxfattribs={"layer": "SEZ_AXIS"})
             msp.add_line((ax0, ay0), (ax0, ay1), dxfattribs={"layer": "SEZ_PROJECT"})
-        msp.add_text("OFFSET [m]", dxfattribs={"height": 2.0, "layer": "SEZ_TEXT"}).set_placement(
-            ((graph_left + graph_right) * 0.5, graph_bottom - 5.0),
-            align="MIDDLE_CENTER",
-        )
-        msp.add_text("QUOTA [m]", dxfattribs={"height": 2.0, "layer": "SEZ_TEXT"}).set_placement(
-            (graph_left - 2.0, (graph_bottom + graph_top) * 0.5),
-            align="MIDDLE_RIGHT",
-        )
+        try:
+            msp.add_text("OFFSET [m]", dxfattribs={"height": 2.0, "layer": "SEZ_TEXT"}).set_placement(
+                ((graph_left + graph_right) * 0.5, graph_bottom - 5.0)
+            )
+        except Exception:
+            pass
+        try:
+            msp.add_text("QUOTA [m]", dxfattribs={"height": 2.0, "layer": "SEZ_TEXT"}).set_placement(
+                (graph_left - 2.0, (graph_bottom + graph_top) * 0.5)
+            )
+        except Exception:
+            pass
 
         table_left = content_left
         table_right = min(content_right, table_left + table_w)
@@ -749,7 +775,6 @@ class DxfExporter:
         graph_w = max(140.0, (x_max - x_min) * 1000.0 / section_h_scale + graph_extra_w)
         graph_h = max(95.0, (z_max - z_min) * 1000.0 / section_h_scale * z_exaggeration + graph_extra_h)
 
-        text_h = 2.0
         table_row_h = max(10.0, graph_h * 0.12)
         table_h = quote_rows * table_row_h + 12.0
 
@@ -875,12 +900,8 @@ class DxfExporter:
                 y = top - (ridx + 0.7) * row_h
                 try:
                     txt = msp.add_text(val, dxfattribs={"height": text_h, "layer": "SEZ_TEXT"})
-                    # Niente allineamento "MIDDLE_CENTER": in alcuni casi il testo
-                    # finisce fuori posizione o non risulta visibile.
-                    # Lo posizioniamo manualmente con un piccolo offset.
                     txt.set_placement((x - text_h * 0.9, y))
                 except Exception:
-                    # fallback silenzioso: non bloccare la tabella per un singolo testo
                     pass
 
         return {"points": point_positions}
