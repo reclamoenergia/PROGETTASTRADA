@@ -45,6 +45,15 @@ class SectionData:
     side_slope_right_outer_offset: Optional[float] = None
     side_slope_left_note: str = ""
     side_slope_right_note: str = ""
+    max_section_width: float = 0.0
+    section_buffer: float = 0.0
+    effective_left_offset: Optional[float] = None
+    effective_right_offset: Optional[float] = None
+    effective_total_width: float = 0.0
+    final_left_offset: Optional[float] = None
+    final_right_offset: Optional[float] = None
+    final_total_width: float = 0.0
+    used_max_width_fallback: bool = False
     warnings: List[str] = field(default_factory=list)
     cut_area: float = 0.0
     fill_area: float = 0.0
@@ -108,12 +117,14 @@ class PluginSettings:
     axis_sample_step: float = 5.0
     section_step: float = 20.0
     section_length: float = 80.0
+    section_buffer: float = 5.0
     section_sample_step: float = 1.0
     profile_h_scale: float = 1000.0
     profile_v_scale: float = 200.0
     section_scale: float = 200.0
     section_vertical_exaggeration: float = 2.0
     section_quote_step: float = 5.0
+    max_cartigli_per_sheet: int = 6
     output_folder: str = ""
     project_name: str = "road_project"
     export_sections_dxf: bool = True

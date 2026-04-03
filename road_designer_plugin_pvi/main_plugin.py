@@ -539,6 +539,11 @@ class RoadDesignerPlugin:
                 sec.width_info = wa.analyze(sec_gen.as_geometry(sec), sec.axis_point)
                 model.build_section_profile(sec, profile, d.min_width.value(), d.crossfall_nominal.value(), d.pad_slope.value())
                 model.add_side_slopes(sec, d.cut_slope.value(), d.fill_slope.value())
+                model.apply_effective_section_window(
+                    sec,
+                    max_section_width=d.section_length.value(),
+                    section_buffer=d.section_buffer.value(),
+                )
                 ew.compute_section_areas(sec)
             d.append_log(f"Sezioni generate: {len(sections)}")
             d.progress.setValue(70)
@@ -632,6 +637,7 @@ class RoadDesignerPlugin:
                     profile_v_scale=d.profile_v_scale.value(),
                     section_h_scale=d.section_scale.value(),
                     min_width=d.min_width.value(),
+                    max_cartigli_per_sheet=d.max_cartigli_per_sheet.value(),
                 )
                 d.append_log(f"DXF profilo: {profile_path}")
             self._run_export_step(phase="dxf_export", sheet_type="profile", fn=_profile_dxf_export)
@@ -647,6 +653,7 @@ class RoadDesignerPlugin:
                     profile_v_scale=d.profile_v_scale.value(),
                     section_h_scale=d.section_scale.value(),
                     min_width=d.min_width.value(),
+                    max_cartigli_per_sheet=d.max_cartigli_per_sheet.value(),
                 )
                 d.append_log(f"DXF sezioni: {sections_path}")
             self._run_export_step(phase="dxf_export", sheet_type="sections", fn=_sections_dxf_export)
