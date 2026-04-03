@@ -21,6 +21,7 @@ from qgis.PyQt.QtWidgets import (
     QProgressBar,
     QScrollArea,
     QSizePolicy,
+    QSpinBox,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -462,12 +463,16 @@ class MainDialog(QDialog):
         self.axis_step = self._spin(5, 0.5, 1000)
         self.section_step = self._spin(20, 1, 1000)
         self.section_length = self._spin(80, 5, 1000)
+        self.section_buffer = self._spin(5, 0.1, 200)
         self.section_sample_step = self._spin(1, 0.1, 10)
         self.profile_h_scale = self._spin(1000, 50, 20000, 10)
         self.profile_v_scale = self._spin(200, 10, 5000, 10)
         self.section_scale = self._spin(200, 10, 5000, 10)
         self.section_vertical_exaggeration = self._spin(2, 0.1, 20, 0.1)
         self.section_quote_step = self._spin(5, 0.1, 100, 0.1)
+        self.max_cartigli_per_sheet = QSpinBox()
+        self.max_cartigli_per_sheet.setRange(1, 64)
+        self.max_cartigli_per_sheet.setValue(6)
         self.cmb_terrain_source = QComboBox()
         self.cmb_terrain_source.addItems(["Raster DTM", "TIN from local contours"])
         self.tin_contour_interval = self._spin(1.0, 0.1, 100.0, 0.1)
@@ -481,22 +486,26 @@ class MainDialog(QDialog):
         gl.addWidget(self.axis_step, 0, 1)
         gl.addWidget(QLabel("Passo sezioni"), 1, 0)
         gl.addWidget(self.section_step, 1, 1)
-        gl.addWidget(QLabel("Lunghezza sezione"), 2, 0)
+        gl.addWidget(QLabel("LUNGHEZZA MAX SEZIONE"), 2, 0)
         gl.addWidget(self.section_length, 2, 1)
-        gl.addWidget(QLabel("Passo campionamento sezione"), 3, 0)
-        gl.addWidget(self.section_sample_step, 3, 1)
-        gl.addWidget(QLabel("Scala profilo orizzontale (1:n)"), 4, 0)
-        gl.addWidget(self.profile_h_scale, 4, 1)
-        gl.addWidget(QLabel("Scala profilo verticale (1:n)"), 5, 0)
-        gl.addWidget(self.profile_v_scale, 5, 1)
-        gl.addWidget(QLabel("Scala sezioni (1:n)"), 6, 0)
-        gl.addWidget(self.section_scale, 6, 1)
-        gl.addWidget(QLabel("Esagerazione verticale sezioni"), 7, 0)
-        gl.addWidget(self.section_vertical_exaggeration, 7, 1)
-        gl.addWidget(QLabel("Passo quotazione sezione [m]"), 8, 0)
-        gl.addWidget(self.section_quote_step, 8, 1)
-        gl.addWidget(QLabel("Sorgente terreno"), 9, 0)
-        gl.addWidget(self.cmb_terrain_source, 9, 1)
+        gl.addWidget(QLabel("BUFFER LATERALE SEZIONE [m]"), 3, 0)
+        gl.addWidget(self.section_buffer, 3, 1)
+        gl.addWidget(QLabel("Passo campionamento sezione"), 4, 0)
+        gl.addWidget(self.section_sample_step, 4, 1)
+        gl.addWidget(QLabel("Scala profilo orizzontale (1:n)"), 5, 0)
+        gl.addWidget(self.profile_h_scale, 5, 1)
+        gl.addWidget(QLabel("Scala profilo verticale (1:n)"), 6, 0)
+        gl.addWidget(self.profile_v_scale, 6, 1)
+        gl.addWidget(QLabel("Scala sezioni (1:n)"), 7, 0)
+        gl.addWidget(self.section_scale, 7, 1)
+        gl.addWidget(QLabel("Esagerazione verticale sezioni"), 8, 0)
+        gl.addWidget(self.section_vertical_exaggeration, 8, 1)
+        gl.addWidget(QLabel("Passo quotazione sezione [m]"), 9, 0)
+        gl.addWidget(self.section_quote_step, 9, 1)
+        gl.addWidget(QLabel("NUMERO MASSIMO CARTIGLI PER FOGLIO"), 10, 0)
+        gl.addWidget(self.max_cartigli_per_sheet, 10, 1)
+        gl.addWidget(QLabel("Sorgente terreno"), 11, 0)
+        gl.addWidget(self.cmb_terrain_source, 11, 1)
 
         self.tin_group = QGroupBox("Parametri TIN locale")
         tin_gl = QGridLayout(self.tin_group)
@@ -509,7 +518,7 @@ class MainDialog(QDialog):
         tin_gl.addWidget(self.chk_tin_add_contours, 3, 0, 1, 2)
         tin_gl.addWidget(self.chk_tin_add_triangles, 4, 0, 1, 2)
         tin_gl.addWidget(self.chk_tin_cache, 5, 0, 1, 2)
-        gl.addWidget(self.tin_group, 10, 0, 1, 2)
+        gl.addWidget(self.tin_group, 12, 0, 1, 2)
 
         self.cmb_terrain_source.currentIndexChanged.connect(self._toggle_tin_group)
         self._toggle_tin_group()
@@ -627,8 +636,12 @@ class MainDialog(QDialog):
             "Valori minori generano più sezioni."
         )
         self.section_length.setToolTip(
-            "Lunghezza totale di ciascuna sezione in metri [m]. "
-            "Valori maggiori estendono l'analisi laterale."
+            "Lunghezza massima della sezione in metri [m]. "
+            "Usata come limite superiore/fallback quando la scarpata non viene intercettata."
+        )
+        self.section_buffer.setToolTip(
+            "Buffer laterale simmetrico della sezione in metri [m]. "
+            "Viene aggiunto a sinistra e destra oltre ai punti di intercettazione della scarpata."
         )
         self.section_sample_step.setToolTip(
             "Passo di campionamento interno alla sezione in metri [m]. "
@@ -653,6 +666,9 @@ class MainDialog(QDialog):
         self.section_quote_step.setToolTip(
             "Passo delle quotazioni in sezione in metri [m]. "
             "Valori minori mostrano quote più frequenti."
+        )
+        self.max_cartigli_per_sheet.setToolTip(
+            "Numero massimo di cartigli sezione da impaginare in ogni foglio DXF."
         )
         self.cmb_terrain_source.setToolTip(
             "Sorgente dati terreno per il campionamento. "

@@ -70,6 +70,78 @@ class RoadModelBuilder:
             section.warnings.append("Scarpata destra approssimata: intercettazione terreno non trovata.")
         return section
 
+    def apply_effective_section_window(self, section: SectionData, max_section_width: float, section_buffer: float) -> SectionData:
+        if not section.offsets or len(section.offsets) < 2:
+            return section
+        max_width = max(float(max_section_width), 0.1)
+        buffer = max(float(section_buffer), 0.0)
+        section.max_section_width = max_width
+        section.section_buffer = buffer
+
+        left_hit = section.left_slope_hit_offset if section.left_slope_resolved else None
+        right_hit = section.right_slope_hit_offset if section.right_slope_resolved else None
+        has_hits = left_hit is not None and right_hit is not None and math.isfinite(left_hit) and math.isfinite(right_hit)
+
+        if has_hits:
+            raw_left = min(float(left_hit), float(right_hit))
+            raw_right = max(float(left_hit), float(right_hit))
+            effective_left = raw_left - buffer
+            effective_right = raw_right + buffer
+            effective_width = max(0.0, effective_right - effective_left)
+            rounded_width = math.ceil(effective_width / 10.0) * 10.0 if effective_width > 0.0 else 10.0
+            final_width = min(max_width, rounded_width)
+            center = 0.5 * (effective_left + effective_right)
+            section.used_max_width_fallback = False
+            section.effective_left_offset = effective_left
+            section.effective_right_offset = effective_right
+            section.effective_total_width = effective_width
+        else:
+            final_width = max_width
+            center = 0.0
+            section.used_max_width_fallback = True
+            section.effective_left_offset = None
+            section.effective_right_offset = None
+            section.effective_total_width = max_width
+
+        dom_left = float(section.offsets[0])
+        dom_right = float(section.offsets[-1])
+        dom_width = max(0.1, dom_right - dom_left)
+        final_width = min(final_width, dom_width)
+        final_left = center - final_width * 0.5
+        final_right = center + final_width * 0.5
+        if final_left < dom_left:
+            shift = dom_left - final_left
+            final_left += shift
+            final_right += shift
+        if final_right > dom_right:
+            shift = final_right - dom_right
+            final_left -= shift
+            final_right -= shift
+        final_left = max(dom_left, final_left)
+        final_right = min(dom_right, final_right)
+        if final_right <= final_left:
+            final_left, final_right = dom_left, dom_right
+
+        section.final_left_offset = final_left
+        section.final_right_offset = final_right
+        section.final_total_width = final_right - final_left
+        self._clip_section_to_offsets(section, final_left, final_right)
+        return section
+
+    def _clip_section_to_offsets(self, section: SectionData, left: float, right: float) -> None:
+        old_offsets = list(section.offsets)
+        if len(old_offsets) < 2:
+            return
+        clipped_offsets = [left]
+        clipped_offsets.extend(o for o in old_offsets if left < o < right)
+        clipped_offsets.append(right)
+        clipped_offsets = sorted(set(round(o, 6) for o in clipped_offsets))
+        section.offsets = clipped_offsets
+        section.terrain_z = [self._interp_piecewise(old_offsets, section.terrain_z, off) for off in clipped_offsets]
+        section.project_z = [self._interp_piecewise(old_offsets, section.project_z, off) for off in clipped_offsets]
+        if section.road_core_z:
+            section.road_core_z = [self._interp_piecewise(old_offsets, section.road_core_z, off) for off in clipped_offsets]
+
     def _project_z_for_progressive(self, profile: ProfileData, prog: float) -> float:
         s = profile.progressive
         z = profile.project_z

@@ -21,12 +21,14 @@ class SettingsManager:
         "axis_sample_step",
         "section_step",
         "section_length",
+        "section_buffer",
         "section_sample_step",
         "profile_h_scale",
         "profile_v_scale",
         "section_scale",
         "section_vertical_exaggeration",
         "section_quote_step",
+        "max_cartigli_per_sheet",
         "tin_contour_interval",
         "tin_processing_buffer",
         "tin_simplify_tolerance",
@@ -48,12 +50,14 @@ class SettingsManager:
             axis_sample_step=dialog.axis_step.value(),
             section_step=dialog.section_step.value(),
             section_length=dialog.section_length.value(),
+            section_buffer=dialog.section_buffer.value(),
             section_sample_step=dialog.section_sample_step.value(),
             profile_h_scale=dialog.profile_h_scale.value(),
             profile_v_scale=dialog.profile_v_scale.value(),
             section_scale=dialog.section_scale.value(),
             section_vertical_exaggeration=dialog.section_vertical_exaggeration.value(),
             section_quote_step=dialog.section_quote_step.value(),
+            max_cartigli_per_sheet=dialog.max_cartigli_per_sheet.value(),
             output_folder=dialog.output_folder.text(),
             project_name=dialog.project_name.text(),
             export_sections_dxf=dialog.chk_dxf_sections.isChecked(),
@@ -93,12 +97,14 @@ class SettingsManager:
         dialog.axis_step.setValue(float(s.axis_sample_step))
         dialog.section_step.setValue(float(s.section_step))
         dialog.section_length.setValue(float(s.section_length))
+        dialog.section_buffer.setValue(float(s.section_buffer))
         dialog.section_sample_step.setValue(float(s.section_sample_step))
         dialog.profile_h_scale.setValue(float(s.profile_h_scale))
         dialog.profile_v_scale.setValue(float(s.profile_v_scale))
         dialog.section_scale.setValue(float(s.section_scale))
         dialog.section_vertical_exaggeration.setValue(float(s.section_vertical_exaggeration))
         dialog.section_quote_step.setValue(float(s.section_quote_step))
+        dialog.max_cartigli_per_sheet.setValue(int(s.max_cartigli_per_sheet))
         dialog.output_folder.setText(str(s.output_folder))
         dialog.project_name.setText(str(s.project_name))
         dialog.chk_dxf_sections.setChecked(bool(s.export_sections_dxf))
@@ -157,6 +163,7 @@ class SettingsManager:
             "axis_sample_step",
             "section_step",
             "section_length",
+            "section_buffer",
             "section_sample_step",
             "profile_h_scale",
             "profile_v_scale",
@@ -169,6 +176,8 @@ class SettingsManager:
             "tin_processing_buffer",
         ):
             _require_positive(key)
+        if int(clean.get("max_cartigli_per_sheet", 0)) <= 0:
+            raise ValueError("max_cartigli_per_sheet deve essere positivo.")
 
         crossfall_min = float(clean.get("crossfall_min_pct", 0.0))
         crossfall_max = float(clean.get("crossfall_max_pct", 0.0))
