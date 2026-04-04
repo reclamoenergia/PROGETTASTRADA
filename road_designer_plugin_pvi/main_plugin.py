@@ -1059,7 +1059,7 @@ class RoadDesignerPlugin:
         cache[key] = (score, dict(summary))
         return score, summary, False
 
-    def _score_candidate(self, candidate_rows, summary: Dict[str, float]) -> Tuple[float, Dict[str, float]]:
+    def _score_candidate(self, candidate_rows, summary: Dict[str, float]) -> float:
         d = self.dialog
         moved = summary["total_movement"]
         roughness = 0.0
@@ -1074,13 +1074,13 @@ class RoadDesignerPlugin:
         w_total = 1.0
         w_balance = 0.03
         score = (w_total * moved) + (w_balance * summary["abs_balance"]) + roughness * 5.0 + warn_pen
-        return score, summary
+        return score
 
     def _evaluate_candidate(self, candidate_rows, align, terrain_axis, terrain, polygon) -> Tuple[float, Dict[str, float]]:
         d = self.dialog
         profile = self.vp_builder.build_from_pvi(align.progressive, terrain_axis, candidate_rows, d.default_curve_length.value())
         _sections, _vol, summary = self._compute_earthworks_for_profile(align, terrain, polygon, profile)
-        return self._score_candidate(candidate_rows, summary)
+        return self._score_candidate(candidate_rows, summary), summary
 
     def _format_comparison_summary(self, current: Dict[str, float], suggested: Dict[str, float]) -> str:
         return (
