@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import random
+import time
 import traceback
 import warnings
 from typing import Dict, List, Optional, Tuple
@@ -736,14 +737,26 @@ class RoadDesignerPlugin:
             self.dialog.append_log(msg)
         self.iface.messageBar().pushMessage("Road Designer PVI", msg, level=Qgis.Info, duration=5)
 
-    def _compute_earthworks_for_profile(self, align, terrain, polygon, profile):
+    def _compute_earthworks_for_profile(
+        self,
+        align,
+        terrain,
+        polygon,
+        profile,
+        section_step: Optional[float] = None,
+        section_sample_step: Optional[float] = None,
+    ):
         d = self.dialog
+        section_step_val = float(section_step) if section_step is not None else d.section_step.value()
+        section_sample_step_val = (
+            float(section_sample_step) if section_sample_step is not None else d.section_sample_step.value()
+        )
         sections = CrossSectionGenerator().generate(
             align,
             terrain,
-            d.section_step.value(),
+            section_step_val,
             d.section_length.value(),
-            d.section_sample_step.value(),
+            section_sample_step_val,
         )
         wa = WidthAnalysis(polygon, d.min_width.value())
         sec_gen = CrossSectionGenerator()
@@ -869,17 +882,64 @@ class RoadDesignerPlugin:
         base_rows = [PviRow(**vars(r)) for r in self.pvi_rows]
         rand = random.Random(42)
         candidates: List[Tuple[float, List[PviRow], Dict[str, float]]] = []
-        multi_starts = max(12, len(unlocked_indices) * 6)
+        multi_starts = max(16, len(unlocked_indices) * 10)
+        shortlist_size = min(5, multi_starts)
+        stagnation_limit = max(6, len(unlocked_indices) * 2)
+        min_improvement = 0.25
+        fast_cache: Dict[Tuple[float, ...], Tuple[float, Dict[str, float]]] = {}
+        full_cache: Dict[Tuple[float, ...], Tuple[float, Dict[str, float]]] = {}
+        fast_eval_count = 0
+        fast_cache_hits = 0
+        full_eval_count = 0
+        full_cache_hits = 0
+
+        d.append_log("Ottimizzazione: ricerca veloce in corso (coarse).")
+        fast_start = time.perf_counter()
+        best_fast_score = float("inf")
+        iters_without_improvement = 0
         for _ in range(multi_starts):
             candidate = [PviRow(**vars(r)) for r in base_rows]
             for idx in unlocked_indices:
                 jitter = rand.uniform(-1.5, 1.5)
                 candidate[idx].elevation += jitter
             candidate = self.vp_builder.recompute_pvi_diagnostics(candidate, d.long_slope_max.value(), d.default_curve_length.value())
-            score, summary = self._evaluate_candidate(candidate, align, terrain_axis, terrain, polygon)
+            score, summary, from_cache = self._evaluate_candidate_fast(
+                candidate,
+                align,
+                terrain_axis,
+                terrain,
+                polygon,
+                unlocked_indices,
+                fast_cache,
+            )
+            if from_cache:
+                fast_cache_hits += 1
+            else:
+                fast_eval_count += 1
             candidates.append((score, candidate, summary))
+            if score < (best_fast_score - min_improvement):
+                best_fast_score = score
+                iters_without_improvement = 0
+            else:
+                iters_without_improvement += 1
+            if iters_without_improvement >= stagnation_limit:
+                d.append_log(
+                    f"Ottimizzazione coarse: arresto anticipato per stagnazione "
+                    f"({stagnation_limit} iterazioni senza miglioramenti significativi)."
+                )
+                break
+        fast_elapsed = time.perf_counter() - fast_start
         candidates.sort(key=lambda x: x[0])
-        top = candidates[: min(4, len(candidates))]
+        top = candidates[: min(shortlist_size, len(candidates))]
+
+        d.append_log(
+            "Ottimizzazione coarse completata | candidati=%s | eval_fast=%s | cache_fast_hits=%s | "
+            "shortlist=%s | tempo=%.2fs | best_cost_fast=%.3f"
+            % (len(candidates), fast_eval_count, fast_cache_hits, len(top), fast_elapsed, best_fast_score)
+        )
+        d.append_log("Ottimizzazione: rifinitura accurata in corso (fine).")
+
+        fine_start = time.perf_counter()
         refined: List[Tuple[float, List[PviRow], Dict[str, float]]] = []
         for _score, seed_rows, _summary in top:
             rows = [PviRow(**vars(r)) for r in seed_rows]
@@ -887,13 +947,37 @@ class RoadDesignerPlugin:
             while step >= 0.05:
                 improved = False
                 for idx in unlocked_indices:
-                    base_eval, base_summary = self._evaluate_candidate(rows, align, terrain_axis, terrain, polygon)
+                    base_eval, base_summary, from_cache = self._evaluate_candidate_full(
+                        rows,
+                        align,
+                        terrain_axis,
+                        terrain,
+                        polygon,
+                        unlocked_indices,
+                        full_cache,
+                    )
+                    if from_cache:
+                        full_cache_hits += 1
+                    else:
+                        full_eval_count += 1
                     best_local = (base_eval, [PviRow(**vars(r)) for r in rows], base_summary)
                     for direction in (-1.0, 1.0):
                         trial = [PviRow(**vars(r)) for r in rows]
                         trial[idx].elevation += direction * step
                         trial = self.vp_builder.recompute_pvi_diagnostics(trial, d.long_slope_max.value(), d.default_curve_length.value())
-                        val, sm = self._evaluate_candidate(trial, align, terrain_axis, terrain, polygon)
+                        val, sm, from_cache = self._evaluate_candidate_full(
+                            trial,
+                            align,
+                            terrain_axis,
+                            terrain,
+                            polygon,
+                            unlocked_indices,
+                            full_cache,
+                        )
+                        if from_cache:
+                            full_cache_hits += 1
+                        else:
+                            full_eval_count += 1
                         if val < best_local[0]:
                             best_local = (val, trial, sm)
                     if best_local[0] < base_eval:
@@ -901,15 +985,82 @@ class RoadDesignerPlugin:
                         improved = True
                 if not improved:
                     step *= 0.5
-            final_score, final_summary = self._evaluate_candidate(rows, align, terrain_axis, terrain, polygon)
+            final_score, final_summary, from_cache = self._evaluate_candidate_full(
+                rows,
+                align,
+                terrain_axis,
+                terrain,
+                polygon,
+                unlocked_indices,
+                full_cache,
+            )
+            if from_cache:
+                full_cache_hits += 1
+            else:
+                full_eval_count += 1
             refined.append((final_score, rows, final_summary))
         refined.sort(key=lambda x: x[0])
+        fine_elapsed = time.perf_counter() - fine_start
+        d.append_log(
+            "Ottimizzazione fine completata | eval_full=%s | cache_full_hits=%s | tempo=%.2fs | best_cost_final=%.3f"
+            % (full_eval_count, full_cache_hits, fine_elapsed, refined[0][0])
+        )
         return refined[0][1], refined[0][2]
 
-    def _evaluate_candidate(self, candidate_rows, align, terrain_axis, terrain, polygon) -> Tuple[float, Dict[str, float]]:
+    def _candidate_cache_key(self, candidate_rows: List[PviRow], unlocked_indices: List[int], rounding_digits: int) -> Tuple[float, ...]:
+        return tuple(round(float(candidate_rows[idx].elevation), rounding_digits) for idx in unlocked_indices)
+
+    def _evaluate_candidate_fast(
+        self,
+        candidate_rows: List[PviRow],
+        align,
+        terrain_axis,
+        terrain,
+        polygon,
+        unlocked_indices: List[int],
+        cache: Dict[Tuple[float, ...], Tuple[float, Dict[str, float]]],
+    ) -> Tuple[float, Dict[str, float], bool]:
         d = self.dialog
+        key = self._candidate_cache_key(candidate_rows, unlocked_indices, rounding_digits=2)
+        if key in cache:
+            score, summary = cache[key]
+            return score, dict(summary), True
+
+        coarse_section_step = max(d.section_step.value(), d.section_step.value() * 3.0)
+        coarse_sample_step = max(d.section_sample_step.value(), d.section_sample_step.value() * 2.0)
         profile = self.vp_builder.build_from_pvi(align.progressive, terrain_axis, candidate_rows, d.default_curve_length.value())
-        _sections, _vol, summary = self._compute_earthworks_for_profile(align, terrain, polygon, profile)
+        _sections, _vol, summary = self._compute_earthworks_for_profile(
+            align,
+            terrain,
+            polygon,
+            profile,
+            section_step=coarse_section_step,
+            section_sample_step=coarse_sample_step,
+        )
+        score = self._score_candidate(candidate_rows, summary)
+        cache[key] = (score, dict(summary))
+        return score, summary, False
+
+    def _evaluate_candidate_full(
+        self,
+        candidate_rows: List[PviRow],
+        align,
+        terrain_axis,
+        terrain,
+        polygon,
+        unlocked_indices: List[int],
+        cache: Dict[Tuple[float, ...], Tuple[float, Dict[str, float]]],
+    ) -> Tuple[float, Dict[str, float], bool]:
+        key = self._candidate_cache_key(candidate_rows, unlocked_indices, rounding_digits=3)
+        if key in cache:
+            score, summary = cache[key]
+            return score, dict(summary), True
+        score, summary = self._evaluate_candidate(candidate_rows, align, terrain_axis, terrain, polygon)
+        cache[key] = (score, dict(summary))
+        return score, summary, False
+
+    def _score_candidate(self, candidate_rows, summary: Dict[str, float]) -> Tuple[float, Dict[str, float]]:
+        d = self.dialog
         moved = summary["total_movement"]
         roughness = 0.0
         for i in range(1, len(candidate_rows) - 1):
@@ -924,6 +1075,12 @@ class RoadDesignerPlugin:
         w_balance = 0.03
         score = (w_total * moved) + (w_balance * summary["abs_balance"]) + roughness * 5.0 + warn_pen
         return score, summary
+
+    def _evaluate_candidate(self, candidate_rows, align, terrain_axis, terrain, polygon) -> Tuple[float, Dict[str, float]]:
+        d = self.dialog
+        profile = self.vp_builder.build_from_pvi(align.progressive, terrain_axis, candidate_rows, d.default_curve_length.value())
+        _sections, _vol, summary = self._compute_earthworks_for_profile(align, terrain, polygon, profile)
+        return self._score_candidate(candidate_rows, summary)
 
     def _format_comparison_summary(self, current: Dict[str, float], suggested: Dict[str, float]) -> str:
         return (
