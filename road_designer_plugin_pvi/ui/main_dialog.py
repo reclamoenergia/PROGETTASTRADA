@@ -570,7 +570,7 @@ class MainDialog(QDialog):
         vl = QVBoxLayout(gb)
         self.btn_calculate = QPushButton("Calcola")
         self.btn_preview_earthworks = QPushButton("Anteprima movimenti terra")
-        self.btn_suggest_profile = QPushButton("Suggerisci profilo bilanciato")
+        self.btn_suggest_profile = QPushButton("Suggerisci profilo a minimo movimento terra")
         self.btn_apply_suggested = QPushButton("Applica profilo suggerito")
         self.txt_earthworks_summary = QPlainTextEdit()
         self.txt_earthworks_summary.setReadOnly(True)
