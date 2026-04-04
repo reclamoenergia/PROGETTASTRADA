@@ -882,51 +882,93 @@ class RoadDesignerPlugin:
         base_rows = [PviRow(**vars(r)) for r in self.pvi_rows]
         rand = random.Random(42)
         candidates: List[Tuple[float, List[PviRow], Dict[str, float]]] = []
-        multi_starts = max(16, len(unlocked_indices) * 10)
-        shortlist_size = min(5, multi_starts)
-        stagnation_limit = max(6, len(unlocked_indices) * 2)
-        min_improvement = 0.25
+        restarts = min(5, max(2, len(unlocked_indices)))
+        shortlist_size = min(3, restarts)
+        quant_step = 0.20
+        fine_quant_step = 0.10
+        min_improvement = 0.10
+        fast_sample_step = max(d.section_step.value() * 4.0, 8.0)
         fast_cache: Dict[Tuple[float, ...], Tuple[float, Dict[str, float]]] = {}
         full_cache: Dict[Tuple[float, ...], Tuple[float, Dict[str, float]]] = {}
         fast_eval_count = 0
         fast_cache_hits = 0
         full_eval_count = 0
         full_cache_hits = 0
+        fast_context = self._build_fast_surrogate_context(align, terrain_axis, sample_step=fast_sample_step)
 
-        d.append_log("Ottimizzazione: ricerca veloce in corso (coarse).")
+        d.append_log("Ottimizzazione: ricerca veloce in corso (surrogato longitudinale).")
         fast_start = time.perf_counter()
         best_fast_score = float("inf")
-        iters_without_improvement = 0
-        for _ in range(multi_starts):
+        no_restart_gain = 0
+        for restart_idx in range(restarts):
             candidate = [PviRow(**vars(r)) for r in base_rows]
             for idx in unlocked_indices:
-                jitter = rand.uniform(-1.5, 1.5)
+                jitter = rand.uniform(-0.8, 0.8) if restart_idx else 0.0
                 candidate[idx].elevation += jitter
+                candidate[idx].elevation = self._quantize_value(candidate[idx].elevation, quant_step)
             candidate = self.vp_builder.recompute_pvi_diagnostics(candidate, d.long_slope_max.value(), d.default_curve_length.value())
-            score, summary, from_cache = self._evaluate_candidate_fast(
+            score, summary, from_cache = self._evaluate_candidate_fast_surrogate(
                 candidate,
                 align,
                 terrain_axis,
-                terrain,
-                polygon,
+                fast_context,
                 unlocked_indices,
                 fast_cache,
+                quant_step,
             )
             if from_cache:
                 fast_cache_hits += 1
             else:
                 fast_eval_count += 1
+            descent_steps = [quant_step, fine_quant_step]
+            for step in descent_steps:
+                improved = True
+                cycles_without_gain = 0
+                max_cycles = max(2, len(unlocked_indices))
+                while improved and cycles_without_gain < 2:
+                    improved = False
+                    cycle_gain = 0.0
+                    for idx in unlocked_indices:
+                        best_local = (score, [PviRow(**vars(r)) for r in candidate], summary)
+                        for direction in (-1.0, 1.0):
+                            trial = [PviRow(**vars(r)) for r in candidate]
+                            trial[idx].elevation = self._quantize_value(trial[idx].elevation + direction * step, step)
+                            trial = self.vp_builder.recompute_pvi_diagnostics(
+                                trial, d.long_slope_max.value(), d.default_curve_length.value()
+                            )
+                            val, sm, from_cache = self._evaluate_candidate_fast_surrogate(
+                                trial,
+                                align,
+                                terrain_axis,
+                                fast_context,
+                                unlocked_indices,
+                                fast_cache,
+                                step,
+                            )
+                            if from_cache:
+                                fast_cache_hits += 1
+                            else:
+                                fast_eval_count += 1
+                            if val < best_local[0]:
+                                best_local = (val, trial, sm)
+                        if best_local[0] < (score - min_improvement):
+                            cycle_gain += score - best_local[0]
+                            score, candidate, summary = best_local
+                            improved = True
+                    cycles_without_gain = cycles_without_gain + 1 if not improved else 0
+                    if cycle_gain < min_improvement:
+                        break
+                    if max_cycles <= 0:
+                        break
+                    max_cycles -= 1
             candidates.append((score, candidate, summary))
             if score < (best_fast_score - min_improvement):
                 best_fast_score = score
-                iters_without_improvement = 0
+                no_restart_gain = 0
             else:
-                iters_without_improvement += 1
-            if iters_without_improvement >= stagnation_limit:
-                d.append_log(
-                    f"Ottimizzazione coarse: arresto anticipato per stagnazione "
-                    f"({stagnation_limit} iterazioni senza miglioramenti significativi)."
-                )
+                no_restart_gain += 1
+            if no_restart_gain >= 2:
+                d.append_log("Ottimizzazione fast: arresto anticipato (restart senza miglioramenti).")
                 break
         fast_elapsed = time.perf_counter() - fast_start
         candidates.sort(key=lambda x: x[0])
@@ -934,59 +976,18 @@ class RoadDesignerPlugin:
 
         d.append_log(
             "Ottimizzazione coarse completata | candidati=%s | eval_fast=%s | cache_fast_hits=%s | "
-            "shortlist=%s | tempo=%.2fs | best_cost_fast=%.3f"
-            % (len(candidates), fast_eval_count, fast_cache_hits, len(top), fast_elapsed, best_fast_score)
+            "cache_fast_size=%s | shortlist=%s | tempo=%.2fs | best_cost_fast=%.3f"
+            % (len(candidates), fast_eval_count, fast_cache_hits, len(fast_cache), len(top), fast_elapsed, best_fast_score)
         )
-        d.append_log("Ottimizzazione: rifinitura accurata in corso (fine).")
+        d.append_log(
+            "Ottimizzazione: verifica finale accurata con sezioni complete sui migliori candidati."
+        )
 
         fine_start = time.perf_counter()
         refined: List[Tuple[float, List[PviRow], Dict[str, float]]] = []
-        for _score, seed_rows, _summary in top:
-            rows = [PviRow(**vars(r)) for r in seed_rows]
-            step = 0.40
-            while step >= 0.05:
-                improved = False
-                for idx in unlocked_indices:
-                    base_eval, base_summary, from_cache = self._evaluate_candidate_full(
-                        rows,
-                        align,
-                        terrain_axis,
-                        terrain,
-                        polygon,
-                        unlocked_indices,
-                        full_cache,
-                    )
-                    if from_cache:
-                        full_cache_hits += 1
-                    else:
-                        full_eval_count += 1
-                    best_local = (base_eval, [PviRow(**vars(r)) for r in rows], base_summary)
-                    for direction in (-1.0, 1.0):
-                        trial = [PviRow(**vars(r)) for r in rows]
-                        trial[idx].elevation += direction * step
-                        trial = self.vp_builder.recompute_pvi_diagnostics(trial, d.long_slope_max.value(), d.default_curve_length.value())
-                        val, sm, from_cache = self._evaluate_candidate_full(
-                            trial,
-                            align,
-                            terrain_axis,
-                            terrain,
-                            polygon,
-                            unlocked_indices,
-                            full_cache,
-                        )
-                        if from_cache:
-                            full_cache_hits += 1
-                        else:
-                            full_eval_count += 1
-                        if val < best_local[0]:
-                            best_local = (val, trial, sm)
-                    if best_local[0] < base_eval:
-                        rows = best_local[1]
-                        improved = True
-                if not improved:
-                    step *= 0.5
+        for _score, rows, _summary in top:
             final_score, final_summary, from_cache = self._evaluate_candidate_full(
-                rows,
+                [PviRow(**vars(r)) for r in rows],
                 align,
                 terrain_axis,
                 terrain,
@@ -1010,33 +1011,88 @@ class RoadDesignerPlugin:
     def _candidate_cache_key(self, candidate_rows: List[PviRow], unlocked_indices: List[int], rounding_digits: int) -> Tuple[float, ...]:
         return tuple(round(float(candidate_rows[idx].elevation), rounding_digits) for idx in unlocked_indices)
 
-    def _evaluate_candidate_fast(
+    def _candidate_cache_key_step(self, candidate_rows: List[PviRow], unlocked_indices: List[int], quant_step: float) -> Tuple[float, ...]:
+        q = max(quant_step, 0.01)
+        return tuple(round(round(float(candidate_rows[idx].elevation) / q) * q, 3) for idx in unlocked_indices)
+
+    def _quantize_value(self, value: float, quant_step: float) -> float:
+        q = max(quant_step, 0.01)
+        return round(round(float(value) / q) * q, 3)
+
+    def _build_fast_surrogate_context(self, align, terrain_axis: List[float], sample_step: float) -> Dict[str, List[float]]:
+        progressive = align.progressive
+        if not progressive:
+            raise ValueError("Asse non valido per ottimizzazione fast.")
+        sample_idx = [0]
+        last_prog = progressive[0]
+        for i in range(1, len(progressive) - 1):
+            if (progressive[i] - last_prog) >= sample_step:
+                sample_idx.append(i)
+                last_prog = progressive[i]
+        if sample_idx[-1] != (len(progressive) - 1):
+            sample_idx.append(len(progressive) - 1)
+        sample_prog = [progressive[i] for i in sample_idx]
+        sample_terrain = [terrain_axis[i] for i in sample_idx]
+        segment_ds = [sample_prog[i + 1] - sample_prog[i] for i in range(len(sample_prog) - 1)]
+        return {
+            "sample_idx": sample_idx,
+            "sample_prog": sample_prog,
+            "sample_terrain": sample_terrain,
+            "segment_ds": segment_ds,
+        }
+
+    def _evaluate_candidate_fast_surrogate(
         self,
         candidate_rows: List[PviRow],
         align,
         terrain_axis,
-        terrain,
-        polygon,
+        fast_context: Dict[str, List[float]],
         unlocked_indices: List[int],
         cache: Dict[Tuple[float, ...], Tuple[float, Dict[str, float]]],
+        quant_step: float,
     ) -> Tuple[float, Dict[str, float], bool]:
         d = self.dialog
-        key = self._candidate_cache_key(candidate_rows, unlocked_indices, rounding_digits=2)
+        key = self._candidate_cache_key_step(candidate_rows, unlocked_indices, quant_step)
         if key in cache:
             score, summary = cache[key]
             return score, dict(summary), True
-
-        coarse_section_step = max(d.section_step.value(), d.section_step.value() * 3.0)
-        coarse_sample_step = max(d.section_sample_step.value(), d.section_sample_step.value() * 2.0)
         profile = self.vp_builder.build_from_pvi(align.progressive, terrain_axis, candidate_rows, d.default_curve_length.value())
-        _sections, _vol, summary = self._compute_earthworks_for_profile(
-            align,
-            terrain,
-            polygon,
-            profile,
-            section_step=coarse_section_step,
-            section_sample_step=coarse_sample_step,
-        )
+        platform_width = max(1.0, float(d.min_width.value()))
+        foundation_thickness = max(0.0, float(d.foundation_thickness.value()))
+        cut_slope = max(0.1, float(d.cut_slope.value()))
+        fill_slope = max(0.1, float(d.fill_slope.value()))
+        sample_idx = fast_context["sample_idx"]
+        sample_terrain = fast_context["sample_terrain"]
+        segment_ds = fast_context["segment_ds"]
+        sample_project = [profile.project_z[i] for i in sample_idx]
+        sample_base = [z - foundation_thickness for z in sample_project]
+        cut_vol = 0.0
+        fill_vol = 0.0
+        for i, ds in enumerate(segment_ds):
+            h0 = sample_terrain[i] - sample_base[i]
+            h1 = sample_terrain[i + 1] - sample_base[i + 1]
+            cut_h0 = max(h0, 0.0)
+            cut_h1 = max(h1, 0.0)
+            fill_h0 = max(-h0, 0.0)
+            fill_h1 = max(-h1, 0.0)
+            cut_a0 = (platform_width * cut_h0) + (cut_slope * cut_h0 * cut_h0)
+            cut_a1 = (platform_width * cut_h1) + (cut_slope * cut_h1 * cut_h1)
+            fill_a0 = (platform_width * fill_h0) + (fill_slope * fill_h0 * fill_h0)
+            fill_a1 = (platform_width * fill_h1) + (fill_slope * fill_h1 * fill_h1)
+            cut_vol += 0.5 * (cut_a0 + cut_a1) * ds
+            fill_vol += 0.5 * (fill_a0 + fill_a1) * ds
+        length = max(fast_context["sample_prog"][-1] - fast_context["sample_prog"][0], 0.0)
+        foundation_vol = platform_width * foundation_thickness * length
+        summary = {
+            "total_cut": cut_vol,
+            "total_fill": fill_vol,
+            "total_movement": cut_vol + fill_vol,
+            "net_balance": cut_vol - fill_vol,
+            "abs_balance": abs(cut_vol - fill_vol),
+            "total_foundation": foundation_vol,
+            "sections_count": len(sample_idx),
+            "approx_count": 0,
+        }
         score = self._score_candidate(candidate_rows, summary)
         cache[key] = (score, dict(summary))
         return score, summary, False
