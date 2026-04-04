@@ -33,6 +33,7 @@ class SettingsManager:
         "tin_processing_buffer",
         "tin_simplify_tolerance",
         "pvi_default_curve_length",
+        "foundation_thickness_m",
     }
 
     def collect_ui_state(self, dialog) -> Dict[str, object]:
@@ -79,6 +80,7 @@ class SettingsManager:
             pvi_elevation_field=dialog.cmb_pvi_elev_field.currentText(),
             pvi_curve_length_field=dialog.cmb_pvi_curve_field.currentText(),
             pvi_default_curve_length=dialog.default_curve_length.value(),
+            foundation_thickness_m=dialog.foundation_thickness.value(),
         )
         return settings.to_dict()
 
@@ -128,6 +130,7 @@ class SettingsManager:
         dialog.select_combo_by_text(dialog.cmb_pvi_elev_field, s.pvi_elevation_field)
         dialog.select_combo_by_text(dialog.cmb_pvi_curve_field, s.pvi_curve_length_field)
         dialog.default_curve_length.setValue(float(s.pvi_default_curve_length))
+        dialog.foundation_thickness.setValue(float(s.foundation_thickness_m))
 
     def save_to_json(self, path: str, data: Dict[str, object]) -> None:
         with open(path, "w", encoding="utf-8") as f:
@@ -174,6 +177,7 @@ class SettingsManager:
             "fill_slope_hv",
             "tin_contour_interval",
             "tin_processing_buffer",
+            "foundation_thickness_m",
         ):
             _require_positive(key)
         if int(clean.get("max_cartigli_per_sheet", 0)) <= 0:
