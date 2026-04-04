@@ -412,6 +412,7 @@ class DxfExporter:
         z_exaggeration: float,
         section_h_scale: float,
         min_width: float,
+        max_cartigli_per_sheet: int,
     ) -> None:
         if not sections:
             return
@@ -419,6 +420,7 @@ class DxfExporter:
         prepared = [self._prepare_section_layout(s, quote_step_m, z_exaggeration, section_h_scale) for s in sections]
         prepared = [p for p in prepared if p]
         if not prepared:
+            self._logger.warning("No section layouts available after preparation; no section sheets will be drawn.")
             return
 
         content_pad = 12.0
@@ -449,6 +451,7 @@ class DxfExporter:
             usable_width = usable_right - usable_left
             usable_height = usable_top - usable_bottom
             n_cols = max(1, int(usable_width / max(1.0, avg_w + col_gap)))
+            n_rows_limit = max(1, int(math.ceil(max(1, max_cartigli_per_sheet) / n_cols)))
             col_width = usable_width / n_cols
 
             row_heights = []
@@ -456,6 +459,8 @@ class DxfExporter:
             col = 0
             j = i
             while j < len(prepared):
+                if (j - i) >= max(1, max_cartigli_per_sheet):
+                    break
                 h = prepared[j]["cart_h"]
                 current_row_h = max(current_row_h, h)
                 col += 1
@@ -463,6 +468,9 @@ class DxfExporter:
                     row_heights.append(current_row_h)
                     current_row_h = 0.0
                     col = 0
+                    if len(row_heights) >= n_rows_limit:
+                        j += 1
+                        break
                 req_h = sum(row_heights) + max(0, len(row_heights) - 1) * row_gap
                 req_h += current_row_h
                 req_h += row_gap if current_row_h > 0 and len(row_heights) > 0 else 0.0
@@ -515,14 +523,26 @@ class DxfExporter:
         self, section: SectionData, quote_step_m: float, z_exaggeration: float, section_h_scale: float
     ) -> Optional[dict]:
         if not section.offsets or not section.terrain_z or not section.project_z:
+            self._logger.warning(
+                "Section discarded during layout preparation: missing mandatory arrays | section=%s",
+                getattr(section, "index", None),
+            )
             return None
         offsets = [o for o in section.offsets if math.isfinite(o)]
         if len(offsets) < 2:
+            self._logger.warning(
+                "Section discarded during layout preparation: less than 2 finite offsets | section=%s",
+                getattr(section, "index", None),
+            )
             return None
         x_min = min(offsets)
         x_max = max(offsets)
         z_vals = [z for z in section.terrain_z + section.project_z if math.isfinite(z)]
         if not z_vals:
+            self._logger.warning(
+                "Section discarded during layout preparation: no finite elevations | section=%s",
+                getattr(section, "index", None),
+            )
             return None
         z_min = min(z_vals)
         z_max = max(z_vals)
@@ -543,6 +563,11 @@ class DxfExporter:
         cart_w = layout["cart_w"]
         cart_h = layout["cart_h"]
         if not all(math.isfinite(v) and v > 0 for v in (graph_w, graph_h, table_h, table_w, cart_w, cart_h)):
+            self._logger.warning(
+                "Section discarded during layout preparation: non-positive/non-finite layout dimensions | section=%s | dims=%s",
+                getattr(section, "index", None),
+                (graph_w, graph_h, table_h, table_w, cart_w, cart_h),
+            )
             return None
         return {
             "section": section,
@@ -636,13 +661,19 @@ class DxfExporter:
             f"T terreno {axis_t:.2f}   P progetto {axis_p:.2f}   "
             f"Scala H 1:{int(item['section_h_scale'])}   V 1:{int(round(v_scale))}"
         )
-        msp.add_text(line1, dxfattribs={"height": 3.0, "layer": "SEZ_TEXT"}).set_placement((content_left, header_y))
-        msp.add_text(line2, dxfattribs={"height": 2.2, "layer": "SEZ_TEXT"}).set_placement((content_left, header_y - 4.5))
+        try:
+            msp.add_text(line1, dxfattribs={"height": 3.0, "layer": "SEZ_TEXT"}).set_placement((content_left, header_y))
+            msp.add_text(line2, dxfattribs={"height": 2.2, "layer": "SEZ_TEXT"}).set_placement((content_left, header_y - 4.5))
+        except Exception as exc:
+            self._log_section_exception(section=sec, step="header_text", exc=exc)
 
         if min_width > 0:
             wmin_x = x1 - side_pad - 42.0
             wmin_y = max(graph_top + 2.0, header_y - 6.0)
-            msp.add_text(f"Wmin {min_width:.2f}", dxfattribs={"height": 2.0, "layer": "SEZ_TEXT"}).set_placement((wmin_x, wmin_y))
+            try:
+                msp.add_text(f"Wmin {min_width:.2f}", dxfattribs={"height": 2.0, "layer": "SEZ_TEXT"}).set_placement((wmin_x, wmin_y))
+            except Exception as exc:
+                self._log_section_exception(section=sec, step="wmin_text", exc=exc)
 
         x_span = max(1e-6, item["x_max"] - item["x_min"])
         z_span = max(1e-6, item["z_max"] - item["z_min"])
@@ -696,14 +727,15 @@ class DxfExporter:
         if self._is_valid_point((ax0, ay0)) and self._is_valid_point((ax0, ay1)):
             msp.add_line((ax0, ay0), (ax0, ay1), dxfattribs={"layer": "SEZ_AXIS"})
             msp.add_line((ax0, ay0), (ax0, ay1), dxfattribs={"layer": "SEZ_PROJECT"})
-        msp.add_text("OFFSET [m]", dxfattribs={"height": 2.0, "layer": "SEZ_TEXT"}).set_placement(
-            ((graph_left + graph_right) * 0.5, graph_bottom - 5.0),
-            align="MIDDLE_CENTER",
-        )
-        msp.add_text("QUOTA [m]", dxfattribs={"height": 2.0, "layer": "SEZ_TEXT"}).set_placement(
-            (graph_left - 2.0, (graph_bottom + graph_top) * 0.5),
-            align="MIDDLE_RIGHT",
-        )
+        try:
+            msp.add_text("OFFSET [m]", dxfattribs={"height": 2.0, "layer": "SEZ_TEXT"}).set_placement(
+                ((graph_left + graph_right) * 0.5, graph_bottom - 5.0)
+            )
+            msp.add_text("QUOTA [m]", dxfattribs={"height": 2.0, "layer": "SEZ_TEXT"}).set_placement(
+                (graph_left - 2.0, (graph_bottom + graph_top) * 0.5)
+            )
+        except Exception as exc:
+            self._log_section_exception(section=sec, step="axis_labels", exc=exc)
 
         table_left = content_left
         table_right = min(content_right, table_left + table_w)
@@ -735,17 +767,20 @@ class DxfExporter:
             px, py = map_pt(p["offset"], z_ref)
             if not self._is_valid_point((px, py)) or not math.isfinite(anchor_x):
                 continue
-            if abs(anchor_x - px) <= 1e-6:
-                msp.add_line((px, py), (px, table_top), dxfattribs={"layer": "SEZ_TABLE"})
-            else:
-                self._safe_add_polyline(
-                    msp,
-                    [(px, py), (px, table_top), (anchor_x, table_top)],
-                    layer="SEZ_TABLE",
-                    section=sec,
-                    step=current_step,
-                )
-            msp.add_circle((px, py), radius=0.8, dxfattribs={"layer": "SEZ_TABLE"})
+            try:
+                if abs(anchor_x - px) <= 1e-6:
+                    msp.add_line((px, py), (px, table_top), dxfattribs={"layer": "SEZ_TABLE"})
+                else:
+                    self._safe_add_polyline(
+                        msp,
+                        [(px, py), (px, table_top), (anchor_x, table_top)],
+                        layer="SEZ_TABLE",
+                        section=sec,
+                        step=current_step,
+                    )
+                msp.add_circle((px, py), radius=0.8, dxfattribs={"layer": "SEZ_TABLE"})
+            except Exception as exc:
+                self._log_section_exception(section=sec, step="single_candle", exc=exc)
 
     def _build_section_cartiglio_layout_model(
         self,
@@ -882,7 +917,7 @@ class DxfExporter:
         anchors.sort(key=lambda point: point["x"])
 
         compact: List[dict] = []
-        min_dx = max(12.0, text_h * 4.5)
+        min_dx = max(18.0, text_h * 5.5)
         for anchor in anchors:
             if not compact or abs(anchor["x"] - compact[-1]["x"]) >= min_dx:
                 compact.append(anchor)
@@ -946,8 +981,16 @@ class DxfExporter:
         keep_idx = {0, len(points) - 1, axis_idx}
         keep_idx.update(i for i, p in enumerate(points) if p.get("is_key"))
         keep_idx.update(range(0, len(points), stride))
-        reduced = [p for idx, p in enumerate(points) if idx in keep_idx]
+        reduced = [dict(p, _must_keep=(idx in keep_idx and (idx in {0, len(points) - 1, axis_idx} or p.get("is_key")))) for idx, p in enumerate(points) if idx in keep_idx]
         reduced.sort(key=lambda p: p["offset"])
+        while len(reduced) > max_points:
+            removable = [i for i, p in enumerate(reduced) if not p.get("_must_keep")]
+            if not removable:
+                break
+            drop_i = min(removable, key=lambda i: abs(reduced[i]["offset"]))
+            reduced.pop(drop_i)
+        for p in reduced:
+            p.pop("_must_keep", None)
         return reduced
 
     def _build_quote_points(self, section: SectionData, quote_step_m: float) -> List[dict]:
