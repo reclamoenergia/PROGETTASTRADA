@@ -524,15 +524,14 @@ class DxfExporter:
     ) -> dict:
         usable_width = max(1.0, usable_right - usable_left)
         usable_height = max(1.0, usable_top - usable_bottom)
-        y_cursor = usable_top
-        placements = []
+        max_items = max(1, max_cartigli_per_sheet)
+        candidate_items: List[dict] = []
         idx = start_idx
-        placed = 0
-        while idx < len(prepared) and placed < max(1, max_cartigli_per_sheet):
+        while idx < len(prepared) and len(candidate_items) < max_items:
             src_item = prepared[idx]
             item, resized = self._compact_layout_to_fit(src_item, usable_width, usable_height)
             if not item:
-                if not placements:
+                if not candidate_items:
                     self._logger.warning(
                         "Forced dedicated sheet but cartiglio cannot fit even after width reduction | section=%s | usable=(%.2f, %.2f)",
                         getattr(src_item.get("section"), "index", None),
@@ -554,21 +553,83 @@ class DxfExporter:
                     item["cart_w"],
                     item["cart_h"],
                 )
-            y0 = y_cursor - item["cart_h"]
-            if y0 < usable_bottom:
-                if not placements:
-                    self._logger.info(
-                        "Section forced to dedicated sheet due to height overflow | section=%s",
-                        getattr(src_item.get("section"), "index", None),
-                    )
-                    return {"placements": [], "next_idx": idx}
-                break
-            x0 = usable_left + (usable_width - item["cart_w"]) * 0.5
-            placements.append({"item": item, "x0": x0, "y0": y0})
-            y_cursor = y0 - row_gap
+            candidate_items.append(item)
             idx += 1
-            placed += 1
-        return {"placements": placements, "next_idx": idx}
+
+        if not candidate_items:
+            return {"placements": [], "next_idx": start_idx}
+
+        valid_plans: List[dict] = []
+        max_cols_reasonable = min(3, len(candidate_items))
+        for n in range(1, len(candidate_items) + 1):
+            subset = candidate_items[:n]
+            for cols in range(1, min(n, max_cols_reasonable) + 1):
+                rows = int(math.ceil(n / cols))
+                slot_w = usable_width / cols
+                slot_h = (usable_height - row_gap * (rows - 1)) / rows
+                if slot_w <= 0.0 or slot_h <= 0.0:
+                    continue
+                if any(item["cart_w"] > slot_w or item["cart_h"] > slot_h for item in subset):
+                    continue
+
+                placements = []
+                for k, item in enumerate(subset):
+                    r = k // cols
+                    c = k % cols
+                    slot_left = usable_left + c * slot_w
+                    slot_top = usable_top - r * (slot_h + row_gap)
+                    x0 = slot_left + (slot_w - item["cart_w"]) * 0.5
+                    y0 = slot_top - slot_h + (slot_h - item["cart_h"]) * 0.5
+                    placements.append({"item": item, "x0": x0, "y0": y0})
+
+                occupied_w = max(item["cart_w"] for item in subset) * cols
+                occupied_h = max(item["cart_h"] for item in subset) * rows + row_gap * (rows - 1)
+                occupancy = (occupied_w * occupied_h) / max(1.0, usable_width * usable_height)
+                valid_plans.append(
+                    {
+                        "n": n,
+                        "rows": rows,
+                        "cols": cols,
+                        "slot_w": slot_w,
+                        "slot_h": slot_h,
+                        "placements": placements,
+                        "occupancy": occupancy,
+                    }
+                )
+
+        self._logger.debug(
+            "Section page-plan candidates | start_idx=%s | candidate_cartigli=%s | valid_solutions=%s",
+            start_idx,
+            len(candidate_items),
+            len(valid_plans),
+        )
+        if not valid_plans:
+            return {"placements": [], "next_idx": start_idx}
+
+        def plan_score(plan: dict) -> tuple:
+            single_col_penalty = 1 if (plan["cols"] == 1 and any(p["cols"] >= 2 and p["n"] == plan["n"] for p in valid_plans)) else 0
+            return (
+                plan["n"],
+                -single_col_penalty,
+                plan["cols"],
+                plan["occupancy"],
+                -abs(plan["rows"] - plan["cols"]),
+            )
+
+        best = max(valid_plans, key=plan_score)
+        reason = (
+            f"preferred cols={best['cols']} with n={best['n']} and occupancy={best['occupancy']:.3f}; "
+            f"balanced grid rows={best['rows']}"
+        )
+        self._logger.debug(
+            "Section page-plan chosen | rows=%s cols=%s slot_w=%.2f slot_h=%.2f | reason=%s",
+            best["rows"],
+            best["cols"],
+            best["slot_w"],
+            best["slot_h"],
+            reason,
+        )
+        return {"placements": best["placements"], "next_idx": start_idx + best["n"]}
 
     def _compact_layout_to_fit(self, item: dict, max_w: float, max_h: float) -> tuple[Optional[dict], bool]:
         if item["cart_w"] <= max_w and item["cart_h"] <= max_h:
@@ -706,6 +767,8 @@ class DxfExporter:
         table_h = float(layout.get("table_h", item["table_h"]))
         graph_w = float(layout.get("graph_w", item["graph_w"]))
         graph_h = float(layout.get("graph_h", item["graph_h"]))
+        plot_w = float(layout.get("plot_w", graph_w))
+        plot_h = float(layout.get("plot_h", graph_h))
 
         content_left = x0 + side_pad
         content_right = min(x1 - side_pad, content_left + content_w)
@@ -725,13 +788,22 @@ class DxfExporter:
             graph_top = graph_bottom + graph_h
         graph_left = content_left
         graph_right = min(content_right, graph_left + graph_w)
+        graph_w = max(1e-6, graph_right - graph_left)
+        plot_w = min(plot_w, graph_w)
+        plot_h = min(plot_h, graph_h)
+        plot_left = graph_left + (graph_w - plot_w) * 0.5
+        plot_bottom = graph_bottom + (graph_h - plot_h) * 0.5
+        plot_right = plot_left + plot_w
+        plot_top = plot_bottom + plot_h
         self._logger.debug(
-            "Section cartiglio layout sec=%s table_bottom=%.2f table_top=%.2f graph_bottom=%.2f graph_top=%.2f",
+            "Section cartiglio layout sec=%s table_bottom=%.2f table_top=%.2f graph_bottom=%.2f graph_top=%.2f plot_w=%.2f plot_h=%.2f",
             sec.index,
             table_bottom,
             table_top,
             graph_bottom,
             graph_top,
+            plot_w,
+            plot_h,
         )
 
         self._safe_add_polyline(
@@ -742,11 +814,19 @@ class DxfExporter:
             section=sec,
             step=current_step,
         )
+        self._safe_add_polyline(
+            msp,
+            [(plot_left, plot_bottom), (plot_right, plot_bottom), (plot_right, plot_top), (plot_left, plot_top), (plot_left, plot_bottom)],
+            layer="SEZ_AXIS",
+            closed=True,
+            section=sec,
+            step=current_step,
+        )
 
         axis_i = min(range(len(sec.offsets)), key=lambda i: abs(sec.offsets[i]))
         axis_t = sec.terrain_z[axis_i]
         axis_p = sec.project_z[axis_i]
-        v_scale = item["section_h_scale"] / max(1e-6, item["z_exaggeration"])
+        v_scale = float(layout.get("v_scale", item["section_h_scale"] / max(1e-6, item["z_exaggeration"])))
         current_step = "text drawing"
         header_y = y1 - top_pad - 3.0
         line1 = f"SEZIONE {sec.index}    PROG {sec.progressive:.2f} m"
@@ -772,8 +852,8 @@ class DxfExporter:
         z_span = max(1e-6, item["z_max"] - item["z_min"])
 
         def map_pt(off: float, z: float) -> tuple[float, float]:
-            x = graph_left + (off - item["x_min"]) / x_span * (graph_right - graph_left)
-            y = graph_bottom + (z - item["z_min"]) / z_span * (graph_top - graph_bottom)
+            x = plot_left + (off - item["x_min"]) / x_span * plot_w
+            y = plot_bottom + (z - item["z_min"]) / z_span * plot_h
             return x, y
 
         current_step = "terrain polyline drawing"
@@ -825,10 +905,10 @@ class DxfExporter:
             msp.add_line((ax0, ay0), (ax0, ay1), dxfattribs={"layer": "SEZ_PROJECT"})
         try:
             msp.add_text("OFFSET [m]", dxfattribs={"height": 2.0, "layer": "SEZ_TEXT"}).set_placement(
-                ((graph_left + graph_right) * 0.5, graph_bottom - 5.0)
+                ((plot_left + plot_right) * 0.5, plot_bottom - 5.0)
             )
             msp.add_text("QUOTA [m]", dxfattribs={"height": 2.0, "layer": "SEZ_TEXT"}).set_placement(
-                (graph_left - 2.0, (graph_bottom + graph_top) * 0.5)
+                (plot_left - 2.0, (plot_bottom + plot_top) * 0.5)
             )
         except Exception as exc:
             self._log_section_exception(section=sec, step="axis_labels", exc=exc)
@@ -895,16 +975,20 @@ class DxfExporter:
         top_pad = 8.0
         bottom_pad = 8.0
         inter_block_gap = 6.0
-        graph_extra_w = 28.0
-        graph_extra_h = 28.0
         graph_extra_bottom = 8.0
         head_h = 32.0
+        min_graph_w = 140.0
+        min_graph_h = 95.0
 
         quote_rows = 3
         table_border_pad = 4.0
 
-        graph_w = max(140.0, (x_max - x_min) * 1000.0 / section_h_scale + graph_extra_w)
-        graph_h = max(95.0, (z_max - z_min) * 1000.0 / section_h_scale * z_exaggeration + graph_extra_h)
+        plot_w = max(1.0, (x_max - x_min) * 1000.0 / section_h_scale)
+        v_scale = section_h_scale / max(1e-6, z_exaggeration)
+        plot_h = max(1.0, (z_max - z_min) * 1000.0 / v_scale)
+
+        graph_w = max(min_graph_w, plot_w)
+        graph_h = max(min_graph_h, plot_h)
 
         table_row_h = max(10.0, graph_h * 0.12)
         table_h = quote_rows * table_row_h + 12.0
@@ -939,6 +1023,9 @@ class DxfExporter:
             "inter_block_gap": inter_block_gap,
             "head_h": head_h,
             "graph_extra_bottom": graph_extra_bottom,
+            "plot_w": plot_w,
+            "plot_h": plot_h,
+            "v_scale": v_scale,
             "graph_w": graph_w,
             "graph_h": graph_h,
             "table_h": table_h,
