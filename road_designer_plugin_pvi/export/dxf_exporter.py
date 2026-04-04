@@ -45,6 +45,7 @@ class DxfExporter:
     PROFILE_V_SCALE = 200.0
     SECTION_H_SCALE = 200.0
     SHEET_GAP = 120.0
+    OFFSET_DUPLICATE_TOL = 1e-4
 
     PROFILE_LAYERS = [
         "PROF_FRAME",
@@ -425,7 +426,6 @@ class DxfExporter:
 
         content_pad = 12.0
         row_gap = 18.0
-        col_gap = 18.0
         sheet_idx = 0
 
         def sheet_origin(idx: int) -> float:
@@ -439,7 +439,6 @@ class DxfExporter:
                 (current_origin_x + sheet.inner_left + 12.0, sheet.height - sheet.margin - 6.0)
             )
 
-        avg_w = sum(item["cart_w"] for item in prepared) / max(1, len(prepared))
         i = 0
         while i < len(prepared):
             draw_sheet(sheet_idx)
@@ -450,60 +449,54 @@ class DxfExporter:
             usable_bottom = sheet.inner_bottom + content_pad
             usable_width = usable_right - usable_left
             usable_height = usable_top - usable_bottom
-            n_cols = max(1, int(usable_width / max(1.0, avg_w + col_gap)))
-            n_rows_limit = max(1, int(math.ceil(max(1, max_cartigli_per_sheet) / n_cols)))
-            col_width = usable_width / n_cols
-
-            row_heights = []
-            current_row_h = 0.0
-            col = 0
-            j = i
-            while j < len(prepared):
-                if (j - i) >= max(1, max_cartigli_per_sheet):
-                    break
-                h = prepared[j]["cart_h"]
-                current_row_h = max(current_row_h, h)
-                col += 1
-                if col == n_cols:
-                    row_heights.append(current_row_h)
-                    current_row_h = 0.0
-                    col = 0
-                    if len(row_heights) >= n_rows_limit:
-                        j += 1
-                        break
-                req_h = sum(row_heights) + max(0, len(row_heights) - 1) * row_gap
-                req_h += current_row_h
-                req_h += row_gap if current_row_h > 0 and len(row_heights) > 0 else 0.0
-                if req_h > usable_height:
-                    break
-                j += 1
-            if j == i:
+            page_plan = self._build_section_page_plan(
+                prepared=prepared,
+                start_idx=i,
+                usable_left=usable_left,
+                usable_right=usable_right,
+                usable_bottom=usable_bottom,
+                usable_top=usable_top,
+                row_gap=row_gap,
+                max_cartigli_per_sheet=max_cartigli_per_sheet,
+            )
+            if not page_plan["placements"]:
+                sec = prepared[i].get("section")
                 self._logger.warning(
-                    "Section cartiglio too large for usable A0 area | section=%s | size=(%.2f, %.2f) | usable=(%.2f, %.2f)",
-                    getattr(prepared[i].get("section"), "index", None),
+                    "Section cartiglio still too large after compaction; skipped | section=%s | cart=(%.2f, %.2f) | usable=(%.2f, %.2f)",
+                    getattr(sec, "index", None),
                     prepared[i]["cart_w"],
                     prepared[i]["cart_h"],
                     usable_width,
                     usable_height,
                 )
                 i += 1
+                sheet_idx += 1
                 continue
 
-            page_items = prepared[i:j]
-            row_max_h = []
-            for start in range(0, len(page_items), n_cols):
-                row_items = page_items[start : start + n_cols]
-                row_max_h.append(max(it["cart_h"] for it in row_items))
-
-            for local_idx, item in enumerate(page_items):
+            for placement in page_plan["placements"]:
+                item = placement["item"]
                 sec = item.get("section")
-                col = local_idx % n_cols
-                row = local_idx // n_cols
-                row_y = usable_top - sum(row_max_h[:row]) - row * row_gap
-                y0 = row_y - item["cart_h"]
-                if y0 < usable_bottom:
-                    break
-                x0 = usable_left + col * col_width + (col_width - item["cart_w"]) * 0.5
+                x0 = placement["x0"]
+                y0 = placement["y0"]
+                if (
+                    x0 < usable_left
+                    or (x0 + item["cart_w"]) > usable_right
+                    or y0 < usable_bottom
+                    or (y0 + item["cart_h"]) > usable_top
+                ):
+                    self._logger.error(
+                        "Page-plan bounds violation blocked | section=%s | x0=%.2f y0=%.2f w=%.2f h=%.2f | usable=[%.2f, %.2f, %.2f, %.2f]",
+                        getattr(sec, "index", None),
+                        x0,
+                        y0,
+                        item["cart_w"],
+                        item["cart_h"],
+                        usable_left,
+                        usable_right,
+                        usable_bottom,
+                        usable_top,
+                    )
+                    continue
                 try:
                     self._draw_single_section_cartiglio(msp, item, x0, y0, min_width)
                 except Exception as exc:
@@ -515,9 +508,109 @@ class DxfExporter:
                         sheet_index=sheet_idx,
                         exc=exc,
                     )
-
-            i = j
+            i = page_plan["next_idx"]
             sheet_idx += 1
+
+    def _build_section_page_plan(
+        self,
+        prepared: List[dict],
+        start_idx: int,
+        usable_left: float,
+        usable_right: float,
+        usable_bottom: float,
+        usable_top: float,
+        row_gap: float,
+        max_cartigli_per_sheet: int,
+    ) -> dict:
+        usable_width = max(1.0, usable_right - usable_left)
+        usable_height = max(1.0, usable_top - usable_bottom)
+        y_cursor = usable_top
+        placements = []
+        idx = start_idx
+        placed = 0
+        while idx < len(prepared) and placed < max(1, max_cartigli_per_sheet):
+            src_item = prepared[idx]
+            item, resized = self._compact_layout_to_fit(src_item, usable_width, usable_height)
+            if not item:
+                if not placements:
+                    self._logger.warning(
+                        "Forced dedicated sheet but cartiglio cannot fit even after width reduction | section=%s | usable=(%.2f, %.2f)",
+                        getattr(src_item.get("section"), "index", None),
+                        usable_width,
+                        usable_height,
+                    )
+                    return {"placements": [], "next_idx": idx + 1}
+                self._logger.info(
+                    "Section moved to dedicated sheet due to size overflow in current plan | section=%s",
+                    getattr(src_item.get("section"), "index", None),
+                )
+                break
+            if resized:
+                self._logger.info(
+                    "Section cartiglio width reduced for pagination | section=%s | old=(%.2f, %.2f) new=(%.2f, %.2f)",
+                    getattr(src_item.get("section"), "index", None),
+                    src_item["cart_w"],
+                    src_item["cart_h"],
+                    item["cart_w"],
+                    item["cart_h"],
+                )
+            y0 = y_cursor - item["cart_h"]
+            if y0 < usable_bottom:
+                if not placements:
+                    self._logger.info(
+                        "Section forced to dedicated sheet due to height overflow | section=%s",
+                        getattr(src_item.get("section"), "index", None),
+                    )
+                    return {"placements": [], "next_idx": idx}
+                break
+            x0 = usable_left + (usable_width - item["cart_w"]) * 0.5
+            placements.append({"item": item, "x0": x0, "y0": y0})
+            y_cursor = y0 - row_gap
+            idx += 1
+            placed += 1
+        return {"placements": placements, "next_idx": idx}
+
+    def _compact_layout_to_fit(self, item: dict, max_w: float, max_h: float) -> tuple[Optional[dict], bool]:
+        if item["cart_w"] <= max_w and item["cart_h"] <= max_h:
+            return item, False
+        variants = [
+            (26.0, 10.0, 7.0),
+            (22.0, 8.0, 6.0),
+            (18.0, 7.0, 5.0),
+        ]
+        for table_label_w, table_col_min_w, min_anchor_dx in variants:
+            candidate = self._rebuild_item_layout(item, table_label_w, table_col_min_w, min_anchor_dx)
+            if candidate["cart_w"] <= max_w and candidate["cart_h"] <= max_h:
+                return candidate, True
+        return None, False
+
+    def _rebuild_item_layout(self, item: dict, table_label_w: float, table_col_min_w: float, min_anchor_dx: float) -> dict:
+        rebuilt = dict(item)
+        layout = self._build_section_cartiglio_layout_model(
+            x_min=item["x_min"],
+            x_max=item["x_max"],
+            z_min=item["z_min"],
+            z_max=item["z_max"],
+            points=item["points"],
+            section_h_scale=item["section_h_scale"],
+            z_exaggeration=item["z_exaggeration"],
+            table_label_w=table_label_w,
+            table_col_min_w=table_col_min_w,
+            min_anchor_dx=min_anchor_dx,
+        )
+        rebuilt.update(
+            {
+                "graph_w": layout["graph_w"],
+                "graph_h": layout["graph_h"],
+                "head_h": layout["head_h"],
+                "table_h": layout["table_h"],
+                "table_w": layout["table_w"],
+                "cart_w": layout["cart_w"],
+                "cart_h": layout["cart_h"],
+                "layout": layout,
+            }
+        )
+        return rebuilt
 
     def _prepare_section_layout(
         self, section: SectionData, quote_step_m: float, z_exaggeration: float, section_h_scale: float
@@ -684,15 +777,18 @@ class DxfExporter:
             return x, y
 
         current_step = "terrain polyline drawing"
-        terr = [map_pt(o, z) for o, z in zip(sec.offsets, sec.terrain_z) if math.isfinite(o) and math.isfinite(z)]
+        terr_raw = self._sanitize_offset_polyline(sec, sec.offsets, sec.terrain_z, "terrain")
+        terr = [map_pt(o, z) for o, z in terr_raw]
         self._safe_add_polyline(msp, terr, layer="SEZ_TERRAIN", section=sec, step=current_step)
 
         current_step = "project polyline drawing"
-        proj = [map_pt(o, z) for o, z in zip(sec.offsets, sec.project_z) if math.isfinite(o) and math.isfinite(z)]
+        proj_raw = self._sanitize_offset_polyline(sec, sec.offsets, sec.project_z, "project")
+        proj = [map_pt(o, z) for o, z in proj_raw]
         self._safe_add_polyline(msp, proj, layer="SEZ_PROJECT", section=sec, step=current_step)
 
         current_step = "road core polyline drawing"
-        core = [map_pt(o, z) for o, z in zip(sec.offsets, sec.road_core_z) if math.isfinite(o) and math.isfinite(z)] if sec.road_core_z else []
+        core_raw = self._sanitize_offset_polyline(sec, sec.offsets, sec.road_core_z, "road_core") if sec.road_core_z else []
+        core = [map_pt(o, z) for o, z in core_raw]
         self._safe_add_polyline(msp, core, layer="SEZ_ROAD_CORE", section=sec, step=current_step)
 
         current_step = "slopes drawing"
@@ -704,18 +800,18 @@ class DxfExporter:
             section=sec,
             step=current_step,
         )
-        ls = self._build_slope_segment(sec, left=True)
-        rs = self._build_slope_segment(sec, left=False)
+        ls = self._build_slope_polyline(sec, left=True)
+        rs = self._build_slope_polyline(sec, left=False)
         self._safe_add_polyline(
             msp,
-            [map_pt(*ls[0]), map_pt(*ls[1])] if len(ls) == 2 else [],
+            [map_pt(o, z) for o, z in ls],
             layer="SEZ_SLOPES",
             section=sec,
             step=current_step,
         )
         self._safe_add_polyline(
             msp,
-            [map_pt(*rs[0]), map_pt(*rs[1])] if len(rs) == 2 else [],
+            [map_pt(o, z) for o, z in rs],
             layer="SEZ_SLOPES",
             section=sec,
             step=current_step,
@@ -791,6 +887,9 @@ class DxfExporter:
         points: List[dict],
         section_h_scale: float,
         z_exaggeration: float,
+        table_label_w: float = 30.0,
+        table_col_min_w: float = 12.0,
+        min_anchor_dx: float = 8.0,
     ) -> dict:
         side_pad = 12.0
         top_pad = 8.0
@@ -802,10 +901,7 @@ class DxfExporter:
         head_h = 32.0
 
         quote_rows = 3
-        table_label_w = 30.0
-        table_col_min_w = 12.0
         table_border_pad = 4.0
-        min_anchor_dx = 8.0
 
         graph_w = max(140.0, (x_max - x_min) * 1000.0 / section_h_scale + graph_extra_w)
         graph_h = max(95.0, (z_max - z_min) * 1000.0 / section_h_scale * z_exaggeration + graph_extra_h)
@@ -1065,6 +1161,37 @@ class DxfExporter:
             return []
         return [(edge_off, edge_z), (outer_off, outer_z)]
 
+    def _build_slope_polyline(self, section: SectionData, left: bool) -> list[tuple[float, float]]:
+        if not section.offsets or not section.project_z or section.width_info is None:
+            return []
+        edge_off = -section.width_info.left_width if left else section.width_info.right_width
+        outer_off = section.side_slope_left_outer_offset if left else section.side_slope_right_outer_offset
+        if outer_off is None:
+            outer_off = section.left_slope_hit_offset if left else section.right_slope_hit_offset
+        if outer_off is None:
+            return self._build_slope_segment(section, left)
+        if left and outer_off > edge_off:
+            return self._build_slope_segment(section, left)
+        if (not left) and outer_off < edge_off:
+            return self._build_slope_segment(section, left)
+        lo = min(edge_off, outer_off)
+        hi = max(edge_off, outer_off)
+        points = [
+            (off, z)
+            for off, z in zip(section.offsets, section.project_z)
+            if math.isfinite(off) and math.isfinite(z) and lo <= off <= hi
+        ]
+        edge_z = self._interp_piecewise(section.offsets, section.project_z, edge_off)
+        outer_z = self._interp_piecewise(section.offsets, section.project_z, outer_off)
+        if not (math.isfinite(edge_z) and math.isfinite(outer_z)):
+            return self._build_slope_segment(section, left)
+        points.append((edge_off, edge_z))
+        points.append((outer_off, outer_z))
+        clean = self._sanitize_offset_points(points, section, f"slope_{'left' if left else 'right'}")
+        if left:
+            clean.sort(key=lambda p: p[0], reverse=True)
+        return clean if len(clean) >= 2 else self._build_slope_segment(section, left)
+
     def _build_pad_polyline(self, section: SectionData) -> list[tuple[float, float]]:
         if not section.offsets or not section.project_z or section.width_info is None:
             return []
@@ -1091,6 +1218,44 @@ class DxfExporter:
 
     def _is_valid_point(self, point: tuple[float, float]) -> bool:
         return len(point) == 2 and math.isfinite(point[0]) and math.isfinite(point[1])
+
+    def _sanitize_offset_polyline(
+        self,
+        section: SectionData,
+        offsets: List[float],
+        elevations: List[float],
+        label: str,
+    ) -> list[tuple[float, float]]:
+        pairs = [(off, z) for off, z in zip(offsets, elevations) if math.isfinite(off) and math.isfinite(z)]
+        return self._sanitize_offset_points(pairs, section, label)
+
+    def _sanitize_offset_points(
+        self,
+        pairs: List[tuple[float, float]],
+        section: Optional[SectionData],
+        label: str,
+    ) -> list[tuple[float, float]]:
+        if not pairs:
+            return []
+        section_idx = getattr(section, "index", None)
+        sorted_pairs = sorted(pairs, key=lambda pair: pair[0])
+        clean: List[tuple[float, float]] = []
+        dropped_duplicates = 0
+        for off, z in sorted_pairs:
+            if clean and abs(off - clean[-1][0]) <= self.OFFSET_DUPLICATE_TOL:
+                clean[-1] = (off, z)
+                dropped_duplicates += 1
+            else:
+                clean.append((off, z))
+        if dropped_duplicates:
+            self._logger.debug(
+                "Removed duplicate/nearly-duplicate offsets | section=%s | profile=%s | dropped=%s | tol=%.6f",
+                section_idx,
+                label,
+                dropped_duplicates,
+                self.OFFSET_DUPLICATE_TOL,
+            )
+        return clean
 
     def _safe_add_polyline(
         self,
