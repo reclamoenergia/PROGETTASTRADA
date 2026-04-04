@@ -59,7 +59,7 @@ class RoadDesignerPlugin:
             self.dialog = MainDialog(self.iface.mainWindow())
             self.dialog.btn_calculate.clicked.connect(self.calculate)
             self.dialog.btn_preview_earthworks.clicked.connect(self.preview_earthworks)
-            self.dialog.btn_suggest_profile.clicked.connect(self.suggest_balanced_profile)
+            self.dialog.btn_suggest_profile.clicked.connect(self.suggest_minimum_earthworks_profile)
             self.dialog.btn_apply_suggested.clicked.connect(self.apply_suggested_profile)
             self.dialog.btn_save_json.clicked.connect(self.save_json)
             self.dialog.btn_load_json.clicked.connect(self.load_json)
@@ -765,6 +765,7 @@ class RoadDesignerPlugin:
         summary = {
             "total_cut": vol.total_cut,
             "total_fill": vol.total_fill,
+            "total_movement": vol.total_cut + vol.total_fill,
             "net_balance": vol.total_cut - vol.total_fill,
             "abs_balance": abs(vol.total_cut - vol.total_fill),
             "total_foundation": vol.total_foundation,
@@ -781,6 +782,7 @@ class RoadDesignerPlugin:
             f"{title}\n"
             f"- Volume totale scavo terreno: {summary['total_cut']:.2f} m³\n"
             f"- Volume totale rilevato terreno: {summary['total_fill']:.2f} m³\n"
+            f"- Movimento terra complessivo: {summary['total_movement']:.2f} m³\n"
             f"- Bilancio netto scavo-rilevato: {summary['net_balance']:.2f} m³\n"
             f"- Differenza assoluta scavo-rilevato: {summary['abs_balance']:.2f} m³\n"
             f"- Volume totale massicciata: {summary['total_foundation']:.2f} m³\n"
@@ -829,7 +831,7 @@ class RoadDesignerPlugin:
             align.points,
         )
 
-    def suggest_balanced_profile(self):
+    def suggest_minimum_earthworks_profile(self):
         d = self.dialog
         if not d:
             return
@@ -858,7 +860,7 @@ class RoadDesignerPlugin:
             self.suggested_profile = self.vp_builder.build_from_pvi(align.progressive, terrain_axis, best_rows, d.default_curve_length.value())
             self.rebuild_preview_profile()
             d.set_earthworks_summary(self._format_comparison_summary(current_summary, best_summary))
-            d.append_log("Profilo suggerito calcolato (non applicato).")
+            d.append_log("Profilo suggerito a minimo movimento terra calcolato (non applicato).")
         except Exception as exc:
             self._warn(f"Suggerimento profilo fallito: {exc}")
 
@@ -908,14 +910,19 @@ class RoadDesignerPlugin:
         d = self.dialog
         profile = self.vp_builder.build_from_pvi(align.progressive, terrain_axis, candidate_rows, d.default_curve_length.value())
         _sections, _vol, summary = self._compute_earthworks_for_profile(align, terrain, polygon, profile)
-        moved = summary["total_cut"] + summary["total_fill"]
+        moved = summary["total_movement"]
         roughness = 0.0
         for i in range(1, len(candidate_rows) - 1):
             g0 = self.vp_builder.incoming_slope_pct(candidate_rows, i) or 0.0
             g1 = self.vp_builder.outgoing_slope_pct(candidate_rows, i) or 0.0
             roughness += abs(g1 - g0)
         warn_pen = sum(1 for r in candidate_rows if r.warning) * 1000.0
-        score = summary["abs_balance"] * 10.0 + moved + roughness * 5.0 + warn_pen
+        # Obiettivo lessicografico pesato:
+        # 1) minimizzare il movimento complessivo terreno
+        # 2) solo in seconda battuta minimizzare il disallineamento scavo/rilevato
+        w_total = 1.0
+        w_balance = 0.03
+        score = (w_total * moved) + (w_balance * summary["abs_balance"]) + roughness * 5.0 + warn_pen
         return score, summary
 
     def _format_comparison_summary(self, current: Dict[str, float], suggested: Dict[str, float]) -> str:
@@ -923,12 +930,16 @@ class RoadDesignerPlugin:
             "Confronto profilo attuale vs suggerito\n"
             f"- Scavo terreno attuale: {current['total_cut']:.2f} m³\n"
             f"- Rilevato terreno attuale: {current['total_fill']:.2f} m³\n"
+            f"- Movimento terra complessivo attuale: {current['total_movement']:.2f} m³\n"
             f"- Bilancio attuale: {current['net_balance']:.2f} m³\n"
             f"- Volume massicciata attuale: {current['total_foundation']:.2f} m³\n\n"
             f"- Scavo terreno suggerito: {suggested['total_cut']:.2f} m³\n"
             f"- Rilevato terreno suggerito: {suggested['total_fill']:.2f} m³\n"
+            f"- Movimento terra complessivo suggerito: {suggested['total_movement']:.2f} m³\n"
             f"- Bilancio suggerito: {suggested['net_balance']:.2f} m³\n"
             f"- Volume massicciata suggerito: {suggested['total_foundation']:.2f} m³\n\n"
+            f"- Delta miglioramento movimento terra complessivo: "
+            f"{(current['total_movement'] - suggested['total_movement']):.2f} m³\n"
             f"- Delta miglioramento bilancio assoluto: "
             f"{(current['abs_balance'] - suggested['abs_balance']):.2f} m³"
         )
