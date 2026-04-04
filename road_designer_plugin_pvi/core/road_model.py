@@ -43,6 +43,14 @@ class RoadModelBuilder:
         section.road_core_right_offset = half_core
         return section
 
+    def apply_foundation_offset(self, section: SectionData, foundation_thickness_m: float) -> SectionData:
+        t = max(float(foundation_thickness_m), 0.0)
+        if not section.project_z:
+            section.base_z = []
+            return section
+        section.base_z = [z - t for z in section.project_z]
+        return section
+
     def add_side_slopes(self, section: SectionData, cut_hv: float, fill_hv: float) -> SectionData:
         if not section.project_z or not section.terrain_z:
             return section

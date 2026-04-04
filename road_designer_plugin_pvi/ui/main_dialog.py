@@ -40,6 +40,7 @@ class ProfilePreviewWidget(QWidget):
         self._terrain: List[float] = []
         self._project: List[float] = []
         self._pvi: List[Tuple[float, float]] = []
+        self._suggested: List[float] = []
         self._drag_idx: int = -1
         self._drag_hover_idx: int = -1
         self._draw_rect = (0, 0, 0, 0)
@@ -51,11 +52,13 @@ class ProfilePreviewWidget(QWidget):
         terrain_z: Sequence[float],
         project_z: Sequence[float],
         pvi_points: Sequence[Tuple[float, float]],
+        suggested_z: Sequence[float] | None = None,
     ):
         self._progressive = list(progressive)
         self._terrain = list(terrain_z)
         self._project = list(project_z)
         self._pvi = list(pvi_points)
+        self._suggested = list(suggested_z or [])
         self._drag_idx = -1
         self._drag_hover_idx = -1
         self.update()
@@ -65,6 +68,7 @@ class ProfilePreviewWidget(QWidget):
         self._terrain = []
         self._project = []
         self._pvi = []
+        self._suggested = []
         self._drag_idx = -1
         self._drag_hover_idx = -1
         self.update()
@@ -90,7 +94,7 @@ class ProfilePreviewWidget(QWidget):
 
         x_min = self._progressive[0]
         x_max = self._progressive[-1]
-        z_all = self._terrain + self._project + [z for _, z in self._pvi]
+        z_all = self._terrain + self._project + self._suggested + [z for _, z in self._pvi]
         z_min = min(z_all)
         z_max = max(z_all)
         z_pad = max((z_max - z_min) * 0.06, 0.25)
@@ -124,6 +128,8 @@ class ProfilePreviewWidget(QWidget):
 
         self._draw_line(painter, self._progressive, self._terrain, QColor("#808080"), map_pt)
         self._draw_line(painter, self._progressive, self._project, QColor("#0d5fb8"), map_pt)
+        if len(self._suggested) == len(self._progressive):
+            self._draw_line(painter, self._progressive, self._suggested, QColor("#2e8b57"), map_pt)
         self._draw_slope_labels(painter, map_pt)
 
         painter.setPen(QPen(QColor("#cc2d2d"), 2))
@@ -321,6 +327,7 @@ class MainDialog(QDialog):
         "L curva [m]",
         "Pendenza in [%]",
         "Pendenza out [%]",
+        "Bloccata",
         "Stato",
     ]
 
@@ -440,6 +447,7 @@ class MainDialog(QDialog):
         self.cut_slope = self._spin(1.5, 0.1, 100)
         self.fill_slope = self._spin(1.8, 0.1, 100)
         self.pad_slope = self._spin(2, 0, 30)
+        self.foundation_thickness = self._spin(0.30, 0.01, 5.0, 0.01)
         widgets = [
             ("Larghezza minima piattaforma", self.min_width),
             ("Pendenza trasv. nominale %", self.crossfall_nominal),
@@ -451,6 +459,7 @@ class MainDialog(QDialog):
             ("Pendenza sterro (H:V)", self.cut_slope),
             ("Pendenza rilevato (H:V)", self.fill_slope),
             ("Pendenza piazzola %", self.pad_slope),
+            ("Spessore massicciata [m]", self.foundation_thickness),
         ]
         for r, (label, w) in enumerate(widgets):
             gl.addWidget(QLabel(label), r, 0)
@@ -560,10 +569,20 @@ class MainDialog(QDialog):
         gb = QGroupBox("AZIONI")
         vl = QVBoxLayout(gb)
         self.btn_calculate = QPushButton("Calcola")
+        self.btn_preview_earthworks = QPushButton("Anteprima movimenti terra")
+        self.btn_suggest_profile = QPushButton("Suggerisci profilo bilanciato")
+        self.btn_apply_suggested = QPushButton("Applica profilo suggerito")
+        self.txt_earthworks_summary = QPlainTextEdit()
+        self.txt_earthworks_summary.setReadOnly(True)
+        self.txt_earthworks_summary.setPlaceholderText("Riepilogo volumi attuale/suggerito")
         self.progress = QProgressBar()
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
         vl.addWidget(self.btn_calculate)
+        vl.addWidget(self.btn_preview_earthworks)
+        vl.addWidget(self.btn_suggest_profile)
+        vl.addWidget(self.btn_apply_suggested)
+        vl.addWidget(self.txt_earthworks_summary)
         vl.addWidget(self.progress)
         vl.addWidget(self.log)
         return gb
@@ -755,9 +774,13 @@ class MainDialog(QDialog):
         self.cmb_pvi_elev_field.setEnabled(enabled)
         self.cmb_pvi_curve_field.setEnabled(enabled)
         self.default_curve_length.setEnabled(enabled)
+        self.foundation_thickness.setEnabled(True)
         self.btn_reload_pvi.setEnabled(enabled)
         self.btn_reset_pvi.setEnabled(enabled)
         self.btn_add_pvi.setEnabled(enabled)
         self.btn_remove_pvi.setEnabled(enabled)
         self.tbl_pvi.setEnabled(enabled)
         self.preview.setEnabled(enabled)
+
+    def set_earthworks_summary(self, text: str):
+        self.txt_earthworks_summary.setPlainText(text)

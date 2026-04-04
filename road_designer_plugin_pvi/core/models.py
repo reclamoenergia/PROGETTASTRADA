@@ -31,6 +31,7 @@ class SectionData:
     offsets: List[float]
     terrain_z: List[float]
     project_z: List[float] = field(default_factory=list)
+    base_z: List[float] = field(default_factory=list)
     road_core_z: List[float] = field(default_factory=list)
     road_core_left_offset: Optional[float] = None
     crown_offset: float = 0.0
@@ -57,6 +58,7 @@ class SectionData:
     warnings: List[str] = field(default_factory=list)
     cut_area: float = 0.0
     fill_area: float = 0.0
+    foundation_area: float = 0.0
     width_info: Optional[WidthInfo] = None
 
 
@@ -76,6 +78,7 @@ class PviRow:
     elevation: float
     curve_length: float = 0.0
     enabled: bool = True
+    locked: bool = False
     source_label: str = ""
     warning: str = ""
 
@@ -100,6 +103,7 @@ class EarthworkResult:
     intervals: List[EarthworkInterval]
     total_cut: float
     total_fill: float
+    total_foundation: float = 0.0
 
 
 @dataclass
@@ -146,6 +150,7 @@ class PluginSettings:
     pvi_elevation_field: str = ""
     pvi_curve_length_field: str = ""
     pvi_default_curve_length: float = 0.0
+    foundation_thickness_m: float = 0.30
 
     def to_dict(self) -> Dict[str, object]:
         return self.__dict__.copy()

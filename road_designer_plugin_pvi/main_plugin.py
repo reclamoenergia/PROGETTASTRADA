@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import os
+import random
 import traceback
 import warnings
-from typing import List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from qgis.PyQt.QtCore import Qt
 from qgis.PyQt.QtWidgets import QAction, QFileDialog, QTableWidgetItem
@@ -39,6 +40,8 @@ class RoadDesignerPlugin:
         self.pvi_rows_original: List[PviRow] = []
         self._pvi_table_updating = False
         self.active_profile = None
+        self.suggested_pvi_rows: List[PviRow] = []
+        self.suggested_profile = None
 
     def initGui(self):
         self.action = QAction("Road Designer Plugin PVI", self.iface.mainWindow())
@@ -55,6 +58,9 @@ class RoadDesignerPlugin:
         if self.dialog is None:
             self.dialog = MainDialog(self.iface.mainWindow())
             self.dialog.btn_calculate.clicked.connect(self.calculate)
+            self.dialog.btn_preview_earthworks.clicked.connect(self.preview_earthworks)
+            self.dialog.btn_suggest_profile.clicked.connect(self.suggest_balanced_profile)
+            self.dialog.btn_apply_suggested.clicked.connect(self.apply_suggested_profile)
             self.dialog.btn_save_json.clicked.connect(self.save_json)
             self.dialog.btn_load_json.clicked.connect(self.load_json)
             self.dialog.cmb_profile_mode.currentIndexChanged.connect(self._on_mode_changed)
@@ -207,6 +213,9 @@ class RoadDesignerPlugin:
             d.cmb_pvi_curve_field.currentText(),
             d.default_curve_length.value(),
         )
+        lock_map = {r.feature_id: r.locked for r in self.pvi_rows}
+        for row in result.rows:
+            row.locked = lock_map.get(row.feature_id, False)
         self.pvi_rows = self.vp_builder.recompute_pvi_diagnostics(
             result.rows,
             d.long_slope_max.value(),
@@ -249,13 +258,17 @@ class RoadDesignerPlugin:
                     f"{row.curve_length:.3f}",
                     "" if in_s is None else f"{in_s:.3f}",
                     "" if out_s is None else f"{out_s:.3f}",
-                    row.warning,
                 ]
                 for c, v in enumerate(values):
                     item = QTableWidgetItem(v)
                     if c not in (2, 3):
                         item.setFlags(item.flags() & ~Qt.ItemIsEditable)
                     tbl.setItem(i, c, item)
+                chk = QTableWidgetItem("")
+                chk.setFlags((chk.flags() | Qt.ItemIsUserCheckable) & ~Qt.ItemIsEditable)
+                chk.setCheckState(Qt.Checked if row.locked else Qt.Unchecked)
+                tbl.setItem(i, 6, chk)
+                tbl.setItem(i, 7, QTableWidgetItem(row.warning))
             tbl.resizeColumnsToContents()
         finally:
             tbl.blockSignals(False)
@@ -265,7 +278,10 @@ class RoadDesignerPlugin:
         if self._pvi_table_updating or not self.dialog:
             return
         r, c = item.row(), item.column()
-        if r < 0 or r >= len(self.pvi_rows) or c not in (2, 3):
+        if r < 0 or r >= len(self.pvi_rows) or c not in (2, 3, 6):
+            return
+        if c == 6:
+            self.pvi_rows[r].locked = item.checkState() == Qt.Checked
             return
         txt = (item.text() or "").strip().replace(",", ".")
         try:
@@ -294,6 +310,8 @@ class RoadDesignerPlugin:
 
     def _on_preview_pvi_dragged(self, row_idx: int, new_elevation: float):
         if not self.dialog or row_idx < 0 or row_idx >= len(self.pvi_rows):
+            return
+        if self.pvi_rows[row_idx].locked:
             return
         self.pvi_rows[row_idx].elevation = float(new_elevation)
         if not self._write_pvi_row_to_layer(self.pvi_rows[row_idx], update_geometry=False):
@@ -463,6 +481,14 @@ class RoadDesignerPlugin:
             self.active_profile = profile
             pvi_points = [(r.progressive, r.elevation) for r in self.pvi_rows if r.enabled]
             d.preview.set_data(profile.progressive, profile.terrain_z, profile.project_z, pvi_points)
+            if self.suggested_profile and len(self.suggested_profile.progressive) == len(profile.progressive):
+                d.preview.set_data(
+                    profile.progressive,
+                    profile.terrain_z,
+                    profile.project_z,
+                    pvi_points,
+                    suggested_z=self.suggested_profile.project_z,
+                )
             msg = f"PVI caricati: {len(self.pvi_rows)}"
             state_warnings = [r.warning for r in self.pvi_rows if r.warning]
             if state_warnings:
@@ -524,32 +550,14 @@ class RoadDesignerPlugin:
             self.active_profile = profile
             d.progress.setValue(45)
 
-            sections = CrossSectionGenerator().generate(
-                align,
-                terrain,
-                d.section_step.value(),
-                d.section_length.value(),
-                d.section_sample_step.value(),
-            )
-            wa = WidthAnalysis(polygon, d.min_width.value())
-            sec_gen = CrossSectionGenerator()
-            model = RoadModelBuilder()
-            ew = EarthworksCalculator()
-            for sec in sections:
-                sec.width_info = wa.analyze(sec_gen.as_geometry(sec), sec.axis_point)
-                model.build_section_profile(sec, profile, d.min_width.value(), d.crossfall_nominal.value(), d.pad_slope.value())
-                model.add_side_slopes(sec, d.cut_slope.value(), d.fill_slope.value())
-                model.apply_effective_section_window(
-                    sec,
-                    max_section_width=d.section_length.value(),
-                    section_buffer=d.section_buffer.value(),
-                )
-                ew.compute_section_areas(sec)
+            sections, vol, summary = self._compute_earthworks_for_profile(align, terrain, polygon, profile)
             d.append_log(f"Sezioni generate: {len(sections)}")
             d.progress.setValue(70)
-
-            vol = ew.compute_volumes(sections)
-            d.append_log(f"Volumi: Sterro={vol.total_cut:.2f} m3, Riporto={vol.total_fill:.2f} m3")
+            d.append_log(
+                f"Volumi terreno@base: Sterro={vol.total_cut:.2f} m3, "
+                f"Riporto={vol.total_fill:.2f} m3, Massicciata={vol.total_foundation:.2f} m3"
+            )
+            d.set_earthworks_summary(self._format_summary(summary))
 
             warn = ConstraintChecker().check_longitudinal(profile, d.long_slope_max.value())
             warn += ConstraintChecker().check_crossfall(sections, d.crossfall_min.value(), d.crossfall_max.value())
@@ -727,3 +735,218 @@ class RoadDesignerPlugin:
         if self.dialog:
             self.dialog.append_log(msg)
         self.iface.messageBar().pushMessage("Road Designer PVI", msg, level=Qgis.Info, duration=5)
+
+    def _compute_earthworks_for_profile(self, align, terrain, polygon, profile):
+        d = self.dialog
+        sections = CrossSectionGenerator().generate(
+            align,
+            terrain,
+            d.section_step.value(),
+            d.section_length.value(),
+            d.section_sample_step.value(),
+        )
+        wa = WidthAnalysis(polygon, d.min_width.value())
+        sec_gen = CrossSectionGenerator()
+        model = RoadModelBuilder()
+        ew = EarthworksCalculator()
+        for sec in sections:
+            sec.width_info = wa.analyze(sec_gen.as_geometry(sec), sec.axis_point)
+            model.build_section_profile(sec, profile, d.min_width.value(), d.crossfall_nominal.value(), d.pad_slope.value())
+            model.add_side_slopes(sec, d.cut_slope.value(), d.fill_slope.value())
+            model.apply_effective_section_window(
+                sec,
+                max_section_width=d.section_length.value(),
+                section_buffer=d.section_buffer.value(),
+            )
+            model.apply_foundation_offset(sec, d.foundation_thickness.value())
+            ew.compute_section_areas(sec)
+        vol = ew.compute_volumes(sections)
+        approx_count = sum(1 for s in sections if not s.left_slope_resolved or not s.right_slope_resolved)
+        summary = {
+            "total_cut": vol.total_cut,
+            "total_fill": vol.total_fill,
+            "net_balance": vol.total_cut - vol.total_fill,
+            "abs_balance": abs(vol.total_cut - vol.total_fill),
+            "total_foundation": vol.total_foundation,
+            "sections_count": len(sections),
+            "approx_count": approx_count,
+        }
+        return sections, vol, summary
+
+    def _format_summary(self, summary: Dict[str, float], title: str = "Anteprima movimenti terra") -> str:
+        warn = ""
+        if summary.get("approx_count", 0):
+            warn = f"\nWarning: {int(summary['approx_count'])} sezioni con scarpata approssimata."
+        return (
+            f"{title}\n"
+            f"- Volume totale scavo terreno: {summary['total_cut']:.2f} m³\n"
+            f"- Volume totale rilevato terreno: {summary['total_fill']:.2f} m³\n"
+            f"- Bilancio netto scavo-rilevato: {summary['net_balance']:.2f} m³\n"
+            f"- Differenza assoluta scavo-rilevato: {summary['abs_balance']:.2f} m³\n"
+            f"- Volume totale massicciata: {summary['total_foundation']:.2f} m³\n"
+            f"- Numero sezioni utilizzate: {int(summary['sections_count'])}{warn}"
+        )
+
+    def preview_earthworks(self):
+        d = self.dialog
+        if not d:
+            return
+        try:
+            align = self._build_alignment()
+            if not align:
+                return
+            dtm = self._layer(d.cmb_dtm.currentText())
+            polygon = self._layer(d.cmb_polygon.currentText())
+            if not dtm or not polygon:
+                self._warn("Selezionare DTM e poligono viabilità per l'anteprima.")
+                return
+            terrain = self._build_terrain_provider(dtm, align.points)
+            profile = self._build_active_profile_for_alignment(align, terrain)
+            _sections, _vol, summary = self._compute_earthworks_for_profile(align, terrain, polygon, profile)
+            d.set_earthworks_summary(self._format_summary(summary))
+            d.append_log("Anteprima movimenti terra aggiornata (nessun export).")
+        except Exception as exc:
+            self._warn(f"Anteprima movimenti terra fallita: {exc}")
+
+    def _build_active_profile_for_alignment(self, align, terrain):
+        d = self.dialog
+        terrain_axis = terrain.sample_many(align.points)
+        if self._profile_mode() == "pvi":
+            if len(self.pvi_rows) < 2:
+                self.reload_pvi_from_layer()
+            return self.vp_builder.build_from_pvi(
+                align.progressive,
+                terrain_axis,
+                self.pvi_rows,
+                d.default_curve_length.value(),
+            )
+        return self.vp_builder.build(
+            align.progressive,
+            terrain_axis,
+            d.long_slope_max.value(),
+            d.vert_radius_min.value(),
+            self._layer(d.cmb_forced.currentText()) if d.cmb_forced.currentText() else None,
+            align.points,
+        )
+
+    def suggest_balanced_profile(self):
+        d = self.dialog
+        if not d:
+            return
+        if self._profile_mode() != "pvi":
+            self._warn("Il suggerimento profilo è disponibile solo in modalità PVI.")
+            return
+        unlocked = [i for i, r in enumerate(self.pvi_rows) if not r.locked]
+        if not unlocked:
+            self._warn("Tutti i PVI sono bloccati: impossibile ottimizzare il profilo.")
+            return
+        try:
+            align = self._build_alignment()
+            if not align:
+                return
+            dtm = self._layer(d.cmb_dtm.currentText())
+            polygon = self._layer(d.cmb_polygon.currentText())
+            if not dtm or not polygon:
+                self._warn("Selezionare DTM e poligono viabilità per il suggerimento profilo.")
+                return
+            terrain = self._build_terrain_provider(dtm, align.points)
+            terrain_axis = terrain.sample_many(align.points)
+            current_profile = self.vp_builder.build_from_pvi(align.progressive, terrain_axis, self.pvi_rows, d.default_curve_length.value())
+            _s0, _v0, current_summary = self._compute_earthworks_for_profile(align, terrain, polygon, current_profile)
+            best_rows, best_summary = self._run_two_stage_optimizer(align, terrain_axis, terrain, polygon, unlocked)
+            self.suggested_pvi_rows = best_rows
+            self.suggested_profile = self.vp_builder.build_from_pvi(align.progressive, terrain_axis, best_rows, d.default_curve_length.value())
+            self.rebuild_preview_profile()
+            d.set_earthworks_summary(self._format_comparison_summary(current_summary, best_summary))
+            d.append_log("Profilo suggerito calcolato (non applicato).")
+        except Exception as exc:
+            self._warn(f"Suggerimento profilo fallito: {exc}")
+
+    def _run_two_stage_optimizer(self, align, terrain_axis, terrain, polygon, unlocked_indices: List[int]) -> Tuple[List[PviRow], Dict[str, float]]:
+        d = self.dialog
+        base_rows = [PviRow(**vars(r)) for r in self.pvi_rows]
+        rand = random.Random(42)
+        candidates: List[Tuple[float, List[PviRow], Dict[str, float]]] = []
+        multi_starts = max(12, len(unlocked_indices) * 6)
+        for _ in range(multi_starts):
+            candidate = [PviRow(**vars(r)) for r in base_rows]
+            for idx in unlocked_indices:
+                jitter = rand.uniform(-1.5, 1.5)
+                candidate[idx].elevation += jitter
+            candidate = self.vp_builder.recompute_pvi_diagnostics(candidate, d.long_slope_max.value(), d.default_curve_length.value())
+            score, summary = self._evaluate_candidate(candidate, align, terrain_axis, terrain, polygon)
+            candidates.append((score, candidate, summary))
+        candidates.sort(key=lambda x: x[0])
+        top = candidates[: min(4, len(candidates))]
+        refined: List[Tuple[float, List[PviRow], Dict[str, float]]] = []
+        for _score, seed_rows, _summary in top:
+            rows = [PviRow(**vars(r)) for r in seed_rows]
+            step = 0.40
+            while step >= 0.05:
+                improved = False
+                for idx in unlocked_indices:
+                    base_eval, base_summary = self._evaluate_candidate(rows, align, terrain_axis, terrain, polygon)
+                    best_local = (base_eval, [PviRow(**vars(r)) for r in rows], base_summary)
+                    for direction in (-1.0, 1.0):
+                        trial = [PviRow(**vars(r)) for r in rows]
+                        trial[idx].elevation += direction * step
+                        trial = self.vp_builder.recompute_pvi_diagnostics(trial, d.long_slope_max.value(), d.default_curve_length.value())
+                        val, sm = self._evaluate_candidate(trial, align, terrain_axis, terrain, polygon)
+                        if val < best_local[0]:
+                            best_local = (val, trial, sm)
+                    if best_local[0] < base_eval:
+                        rows = best_local[1]
+                        improved = True
+                if not improved:
+                    step *= 0.5
+            final_score, final_summary = self._evaluate_candidate(rows, align, terrain_axis, terrain, polygon)
+            refined.append((final_score, rows, final_summary))
+        refined.sort(key=lambda x: x[0])
+        return refined[0][1], refined[0][2]
+
+    def _evaluate_candidate(self, candidate_rows, align, terrain_axis, terrain, polygon) -> Tuple[float, Dict[str, float]]:
+        d = self.dialog
+        profile = self.vp_builder.build_from_pvi(align.progressive, terrain_axis, candidate_rows, d.default_curve_length.value())
+        _sections, _vol, summary = self._compute_earthworks_for_profile(align, terrain, polygon, profile)
+        moved = summary["total_cut"] + summary["total_fill"]
+        roughness = 0.0
+        for i in range(1, len(candidate_rows) - 1):
+            g0 = self.vp_builder.incoming_slope_pct(candidate_rows, i) or 0.0
+            g1 = self.vp_builder.outgoing_slope_pct(candidate_rows, i) or 0.0
+            roughness += abs(g1 - g0)
+        warn_pen = sum(1 for r in candidate_rows if r.warning) * 1000.0
+        score = summary["abs_balance"] * 10.0 + moved + roughness * 5.0 + warn_pen
+        return score, summary
+
+    def _format_comparison_summary(self, current: Dict[str, float], suggested: Dict[str, float]) -> str:
+        return (
+            "Confronto profilo attuale vs suggerito\n"
+            f"- Scavo terreno attuale: {current['total_cut']:.2f} m³\n"
+            f"- Rilevato terreno attuale: {current['total_fill']:.2f} m³\n"
+            f"- Bilancio attuale: {current['net_balance']:.2f} m³\n"
+            f"- Volume massicciata attuale: {current['total_foundation']:.2f} m³\n\n"
+            f"- Scavo terreno suggerito: {suggested['total_cut']:.2f} m³\n"
+            f"- Rilevato terreno suggerito: {suggested['total_fill']:.2f} m³\n"
+            f"- Bilancio suggerito: {suggested['net_balance']:.2f} m³\n"
+            f"- Volume massicciata suggerito: {suggested['total_foundation']:.2f} m³\n\n"
+            f"- Delta miglioramento bilancio assoluto: "
+            f"{(current['abs_balance'] - suggested['abs_balance']):.2f} m³"
+        )
+
+    def apply_suggested_profile(self):
+        if not self.suggested_pvi_rows:
+            self._warn("Nessun profilo suggerito disponibile da applicare.")
+            return
+        for i, row in enumerate(self.pvi_rows):
+            if row.locked:
+                continue
+            self.pvi_rows[i].elevation = self.suggested_pvi_rows[i].elevation
+        if self.dialog:
+            self.pvi_rows = self.vp_builder.recompute_pvi_diagnostics(
+                self.pvi_rows,
+                self.dialog.long_slope_max.value(),
+                self.dialog.default_curve_length.value(),
+            )
+        self._refresh_pvi_table()
+        self.rebuild_preview_profile()
+        self._info("Profilo suggerito applicato ai PVI non bloccati.")
