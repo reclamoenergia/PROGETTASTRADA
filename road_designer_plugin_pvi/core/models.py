@@ -120,6 +120,7 @@ class PluginSettings:
     pad_slope_pct: float = 2.0
     axis_sample_step: float = 5.0
     section_step: float = 20.0
+    surface_section_step: float = 5.0
     section_length: float = 80.0
     section_buffer: float = 5.0
     section_sample_step: float = 1.0

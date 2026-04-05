@@ -71,7 +71,9 @@ class RoadDesignerPlugin:
             self.dialog.btn_add_pvi.clicked.connect(self.add_pvi)
             self.dialog.btn_remove_pvi.clicked.connect(self.remove_selected_pvi)
             self.dialog.tbl_pvi.itemChanged.connect(self._on_pvi_table_item_changed)
+            self.dialog.tbl_pvi.currentCellChanged.connect(self._on_pvi_table_selection_changed)
             self.dialog.preview.pviDragged.connect(self._on_preview_pvi_dragged)
+            self.dialog.preview.pviSelected.connect(self._on_preview_pvi_selected)
         self.refresh_layers()
         self._on_mode_changed()
         self.dialog.show()
@@ -271,6 +273,7 @@ class RoadDesignerPlugin:
                 tbl.setItem(i, 6, chk)
                 tbl.setItem(i, 7, QTableWidgetItem(row.warning))
             tbl.resizeColumnsToContents()
+            d.preview.set_selected_index(tbl.currentRow())
         finally:
             tbl.blockSignals(False)
             self._pvi_table_updating = False
@@ -324,6 +327,18 @@ class RoadDesignerPlugin:
         )
         self._refresh_pvi_table()
         self.rebuild_preview_profile()
+
+    def _on_pvi_table_selection_changed(self, current_row, _current_col, _prev_row, _prev_col):
+        if not self.dialog:
+            return
+        self.dialog.preview.set_selected_index(current_row)
+
+    def _on_preview_pvi_selected(self, row_idx: int):
+        d = self.dialog
+        if not d:
+            return
+        if 0 <= row_idx < d.tbl_pvi.rowCount():
+            d.tbl_pvi.setCurrentCell(row_idx, 0)
 
     def add_pvi(self):
         d = self.dialog
@@ -568,7 +583,7 @@ class RoadDesignerPlugin:
                 d.append_log(f"WARNING: {w}")
             d.progress.setValue(80)
 
-            self._run_exports(align, axis, profile, sections, vol)
+            self._run_exports(align, axis, profile, sections, vol, terrain, polygon)
             d.progress.setValue(100)
             self._info("Calcolo completato con successo")
         except Exception as exc:
@@ -606,7 +621,7 @@ class RoadDesignerPlugin:
         )
         return TinTerrainProvider(tin_result.surface)
 
-    def _run_exports(self, align, axis_layer, profile, sections, vol):
+    def _run_exports(self, align, axis_layer, profile, sections, vol, terrain=None, polygon=None):
         d = self.dialog
         if not d:
             return
@@ -615,9 +630,44 @@ class RoadDesignerPlugin:
             d.append_log("WARNING: Cartella output non impostata: i layer vettoriali saranno creati solo in memoria.")
         name = d.project_name.text().strip() or "road_project"
         crs_authid = axis_layer.crs().authid() if axis_layer and axis_layer.crs().isValid() else QgsProject.instance().crs().authid()
+        surface_step = max(0.01, float(d.surface_section_step.value() or 0.0))
+        if surface_step <= 0:
+            surface_step = float(d.section_step.value())
+        surface_sections = sections
+        if abs(surface_step - float(d.section_step.value())) > 1.0e-9:
+            try:
+                terrain_for_surface = terrain
+                if terrain_for_surface is None:
+                    dtm_layer = self._layer(d.cmb_dtm.currentText())
+                    terrain_for_surface = self._build_terrain_provider(dtm_layer, align.points)
+                polygon_for_surface = polygon if polygon is not None else self._layer(d.cmb_polygon.currentText())
+                surface_sections, _sv, _ss = self._compute_earthworks_for_profile(
+                    align,
+                    terrain_for_surface,
+                    polygon_for_surface,
+                    profile,
+                    section_step=surface_step,
+                )
+                d.append_log(
+                    "Road surface discreta con passo dedicato: "
+                    f"{surface_step:.3f} m (sezioni surface={len(surface_sections)})."
+                )
+            except Exception as exc:
+                d.append_log(
+                    "WARNING: impossibile usare passo road surface dedicato; "
+                    f"fallback a passo sezioni standard ({d.section_step.value():.3f} m): {exc}"
+                )
+                surface_sections = sections
 
         def _vector_export():
-            vec_result = VectorExporter().export_outputs(align, sections, folder, name, crs_authid)
+            vec_result = VectorExporter().export_outputs(
+                align,
+                sections,
+                folder,
+                name,
+                crs_authid,
+                surface_sections=surface_sections,
+            )
             d.append_log(
                 "Layer QGIS creati: "
                 f"{vec_result['axis_layer_name']}, {vec_result['sections_layer_name']}, "

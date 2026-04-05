@@ -20,6 +20,7 @@ class SettingsManager:
         "pad_slope_pct",
         "axis_sample_step",
         "section_step",
+        "surface_section_step",
         "section_length",
         "section_buffer",
         "section_sample_step",
@@ -50,6 +51,7 @@ class SettingsManager:
             pad_slope_pct=dialog.pad_slope.value(),
             axis_sample_step=dialog.axis_step.value(),
             section_step=dialog.section_step.value(),
+            surface_section_step=dialog.surface_section_step.value(),
             section_length=dialog.section_length.value(),
             section_buffer=dialog.section_buffer.value(),
             section_sample_step=dialog.section_sample_step.value(),
@@ -98,6 +100,7 @@ class SettingsManager:
         dialog.pad_slope.setValue(float(s.pad_slope_pct))
         dialog.axis_step.setValue(float(s.axis_sample_step))
         dialog.section_step.setValue(float(s.section_step))
+        dialog.surface_section_step.setValue(float(s.surface_section_step))
         dialog.section_length.setValue(float(s.section_length))
         dialog.section_buffer.setValue(float(s.section_buffer))
         dialog.section_sample_step.setValue(float(s.section_sample_step))
@@ -165,6 +168,7 @@ class SettingsManager:
             "min_vertical_radius",
             "axis_sample_step",
             "section_step",
+            "surface_section_step",
             "section_length",
             "section_buffer",
             "section_sample_step",
