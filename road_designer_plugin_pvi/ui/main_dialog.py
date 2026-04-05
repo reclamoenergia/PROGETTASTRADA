@@ -24,6 +24,7 @@ from qgis.PyQt.QtWidgets import (
     QSpinBox,
     QTableWidget,
     QTableWidgetItem,
+    QToolTip,
     QVBoxLayout,
     QWidget,
 )
@@ -31,6 +32,7 @@ from qgis.PyQt.QtWidgets import (
 
 class ProfilePreviewWidget(QWidget):
     pviDragged = pyqtSignal(int, float)
+    pviSelected = pyqtSignal(int)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -43,8 +45,17 @@ class ProfilePreviewWidget(QWidget):
         self._suggested: List[float] = []
         self._drag_idx: int = -1
         self._drag_hover_idx: int = -1
+        self._selected_idx: int = -1
+        self._is_panning = False
+        self._pan_start_pos = None
+        self._pan_start_view = None
         self._draw_rect = (0, 0, 0, 0)
         self._z_range = (0.0, 1.0)
+        self._x_data_range = (0.0, 1.0)
+        self._x_view = (0.0, 1.0)
+        self._z_data_range = (0.0, 1.0)
+        self._z_view = (0.0, 1.0)
+        self.setMouseTracking(True)
 
     def set_data(
         self,
@@ -54,6 +65,7 @@ class ProfilePreviewWidget(QWidget):
         pvi_points: Sequence[Tuple[float, float]],
         suggested_z: Sequence[float] | None = None,
     ):
+        had_data = bool(self._progressive and self._terrain and self._project)
         self._progressive = list(progressive)
         self._terrain = list(terrain_z)
         self._project = list(project_z)
@@ -61,6 +73,9 @@ class ProfilePreviewWidget(QWidget):
         self._suggested = list(suggested_z or [])
         self._drag_idx = -1
         self._drag_hover_idx = -1
+        self._selected_idx = -1 if self._selected_idx >= len(self._pvi) else self._selected_idx
+        if not had_data:
+            self._reset_view_ranges()
         self.update()
 
     def clear_data(self):
@@ -71,7 +86,15 @@ class ProfilePreviewWidget(QWidget):
         self._suggested = []
         self._drag_idx = -1
         self._drag_hover_idx = -1
+        self._selected_idx = -1
+        self._is_panning = False
         self.update()
+
+    def set_selected_index(self, idx: int):
+        new_idx = idx if 0 <= idx < len(self._pvi) else -1
+        if new_idx != self._selected_idx:
+            self._selected_idx = new_idx
+            self.update()
 
     def paintEvent(self, event):
         super().paintEvent(event)
@@ -92,31 +115,37 @@ class ProfilePreviewWidget(QWidget):
         draw_h = max(1, self.height() - top_margin - bottom_margin)
         self._draw_rect = (left_margin, top_margin, draw_w, draw_h)
 
-        x_min = self._progressive[0]
-        x_max = self._progressive[-1]
+        x_min_data = self._progressive[0]
+        x_max_data = self._progressive[-1]
         z_all = self._terrain + self._project + self._suggested + [z for _, z in self._pvi]
         z_min = min(z_all)
         z_max = max(z_all)
         z_pad = max((z_max - z_min) * 0.06, 0.25)
         z_min -= z_pad
         z_max += z_pad
-        self._z_range = (z_min, z_max)
-        if abs(x_max - x_min) < 1e-9 or abs(z_max - z_min) < 1e-9:
+        self._x_data_range = (x_min_data, x_max_data)
+        self._z_data_range = (z_min, z_max)
+        if not self._view_range_valid(self._x_view) or not self._view_range_valid(self._z_view):
+            self._reset_view_ranges()
+        x_min, x_max = self._x_view
+        z_min_view, z_max_view = self._z_view
+        self._z_range = (z_min_view, z_max_view)
+        if abs(x_max - x_min) < 1e-9 or abs(z_max_view - z_min_view) < 1e-9:
             painter.setPen(QColor("#666666"))
             painter.drawText(self.rect(), Qt.AlignCenter, "Range profilo insufficiente")
             return
 
         def map_pt(s: float, z: float) -> Tuple[int, int]:
             x = left_margin + int((s - x_min) / (x_max - x_min) * draw_w)
-            y = top_margin + int((z_max - z) / (z_max - z_min) * draw_h)
+            y = top_margin + int((z_max_view - z) / (z_max_view - z_min_view) * draw_h)
             return x, y
 
         self._draw_grid_and_axes(
             painter,
             x_min,
             x_max,
-            z_min,
-            z_max,
+            z_min_view,
+            z_max_view,
             left_margin,
             top_margin,
             draw_w,
@@ -132,10 +161,18 @@ class ProfilePreviewWidget(QWidget):
             self._draw_line(painter, self._progressive, self._suggested, QColor("#2e8b57"), map_pt)
         self._draw_slope_labels(painter, map_pt)
 
-        painter.setPen(QPen(QColor("#cc2d2d"), 2))
-        for s, z in self._pvi:
+        label_positions: List[Tuple[int, int]] = []
+        for idx, (s, z) in enumerate(self._pvi):
             x, y = map_pt(s, z)
-            painter.drawEllipse(x - 3, y - 3, 6, 6)
+            is_selected = idx == self._selected_idx
+            pt_color = QColor("#8a1414") if is_selected else QColor("#cc2d2d")
+            radius = 5 if is_selected else 4
+            painter.setPen(QPen(pt_color, 2))
+            painter.setBrush(pt_color)
+            painter.drawEllipse(x - radius, y - radius, radius * 2, radius * 2)
+            label_positions.append((x, y))
+
+        self._draw_pvi_labels(painter, label_positions)
 
         if 0 <= self._drag_hover_idx < len(self._pvi):
             hs, hz = self._pvi[self._drag_hover_idx]
@@ -143,7 +180,7 @@ class ProfilePreviewWidget(QWidget):
             painter.setPen(QPen(QColor("#8a1414"), 2))
             painter.drawEllipse(hx - 5, hy - 5, 10, 10)
             painter.setPen(QColor("#4a4a4a"))
-            painter.drawText(hx + 8, hy - 10, f"s={hs:.2f} m  z={hz:.2f} m")
+            painter.drawText(hx + 8, hy - 10, f"P{self._drag_hover_idx + 1}  s={hs:.2f} m  z={hz:.2f} m")
 
     def _draw_line(self, painter, x_vals, y_vals, color, mapper):
         painter.setPen(QPen(color, 2))
@@ -252,6 +289,26 @@ class ProfilePreviewWidget(QWidget):
             painter.drawText(x - 35, y - 16, 70, 14, Qt.AlignCenter, label)
             last_text_x = x
 
+    def _draw_pvi_labels(self, painter: QPainter, label_positions: Sequence[Tuple[int, int]]) -> None:
+        if not label_positions:
+            return
+        painter.setPen(QColor("#4a4a4a"))
+        min_dx = 26
+        last_x = -10_000
+        last_y = -10_000
+        for idx, (x, y) in enumerate(label_positions):
+            if abs(x - last_x) < min_dx and abs(y - last_y) < 12:
+                continue
+            painter.drawText(x + 6, y - 8, f"P{idx + 1}")
+            last_x, last_y = x, y
+
+    def _reset_view_ranges(self):
+        self._x_view = self._x_data_range
+        self._z_view = self._z_data_range
+
+    def _view_range_valid(self, rng: Tuple[float, float]) -> bool:
+        return len(rng) == 2 and rng[1] > rng[0]
+
     def _map_y_to_elevation(self, y: float) -> float:
         left, top, _draw_w, draw_h = self._draw_rect
         z_min, z_max = self._z_range
@@ -265,9 +322,8 @@ class ProfilePreviewWidget(QWidget):
         if not self._pvi or not self._progressive:
             return -1
         left, top, draw_w, draw_h = self._draw_rect
-        x_min = self._progressive[0]
-        x_max = self._progressive[-1]
-        z_min, z_max = self._z_range
+        x_min, x_max = self._x_view
+        z_min, z_max = self._z_view
         if draw_w <= 0 or draw_h <= 0 or x_max <= x_min or z_max <= z_min:
             return -1
 
@@ -289,10 +345,24 @@ class ProfilePreviewWidget(QWidget):
     def _event_pos(self, event):
         return event.position() if hasattr(event, "position") else event.pos()
 
+    def _event_global_pos(self, event):
+        if hasattr(event, "globalPosition"):
+            return event.globalPosition().toPoint()
+        return event.globalPos()
+
     def mousePressEvent(self, event):
-        if event.button() == Qt.LeftButton:
-            self._drag_idx = self._find_pvi_at(self._event_pos(event))
-            self._drag_hover_idx = self._drag_idx
+        if event.button() in (Qt.LeftButton, Qt.MiddleButton):
+            ev_pos = self._event_pos(event)
+            hit_idx = self._find_pvi_at(ev_pos)
+            if event.button() == Qt.LeftButton and hit_idx >= 0:
+                self._drag_idx = hit_idx
+                self._drag_hover_idx = hit_idx
+                self._selected_idx = hit_idx
+                self.pviSelected.emit(hit_idx)
+            else:
+                self._is_panning = True
+                self._pan_start_pos = ev_pos
+                self._pan_start_view = (self._x_view, self._z_view)
             self.update()
         super().mousePressEvent(event)
 
@@ -304,19 +374,109 @@ class ProfilePreviewWidget(QWidget):
             self._pvi[self._drag_idx] = (s, new_z)
             self._drag_hover_idx = self._drag_idx
             self.pviDragged.emit(self._drag_idx, new_z)
+            QToolTip.showText(self._event_global_pos(event), f"P{self._drag_idx + 1}\ns={s:.2f} m\nz={new_z:.2f} m", self)
             self.update()
+        elif self._is_panning and self._pan_start_pos is not None and self._pan_start_view is not None:
+            left, top, draw_w, draw_h = self._draw_rect
+            if draw_w > 0 and draw_h > 0:
+                ev_pos = self._event_pos(event)
+                dx_px = ev_pos.x() - self._pan_start_pos.x()
+                dy_px = ev_pos.y() - self._pan_start_pos.y()
+                start_x, start_z = self._pan_start_view
+                x_span = start_x[1] - start_x[0]
+                z_span = start_z[1] - start_z[0]
+                dx_world = -(dx_px / draw_w) * x_span
+                dz_world = (dy_px / draw_h) * z_span
+                self._x_view = self._clamp_view(
+                    (start_x[0] + dx_world, start_x[1] + dx_world), self._x_data_range
+                )
+                self._z_view = self._clamp_view(
+                    (start_z[0] + dz_world, start_z[1] + dz_world), self._z_data_range
+                )
+                self.update()
         else:
-            hover_idx = self._find_pvi_at(self._event_pos(event))
+            ev_pos = self._event_pos(event)
+            hover_idx = self._find_pvi_at(ev_pos)
             if hover_idx != self._drag_hover_idx:
                 self._drag_hover_idx = hover_idx
+                if hover_idx >= 0:
+                    hs, hz = self._pvi[hover_idx]
+                    QToolTip.showText(
+                        self._event_global_pos(event),
+                        f"P{hover_idx + 1}\ns={hs:.2f} m\nz={hz:.2f} m",
+                        self,
+                    )
+                else:
+                    QToolTip.hideText()
                 self.update()
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
-        if event.button() == Qt.LeftButton:
+        if event.button() in (Qt.LeftButton, Qt.MiddleButton):
             self._drag_idx = -1
+            self._is_panning = False
+            self._pan_start_pos = None
+            self._pan_start_view = None
             self.update()
         super().mouseReleaseEvent(event)
+
+    def mouseDoubleClickEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self._reset_view_ranges()
+            self.update()
+        super().mouseDoubleClickEvent(event)
+
+    def wheelEvent(self, event):
+        if not self._progressive:
+            return super().wheelEvent(event)
+        left, top, draw_w, draw_h = self._draw_rect
+        if draw_w <= 0 or draw_h <= 0:
+            return super().wheelEvent(event)
+        pos = self._event_pos(event)
+        if pos.x() < left or pos.x() > left + draw_w or pos.y() < top or pos.y() > top + draw_h:
+            return super().wheelEvent(event)
+        zoom_in = event.angleDelta().y() > 0
+        factor = 0.85 if zoom_in else 1.18
+        x_center = self._x_view[0] + ((pos.x() - left) / draw_w) * (self._x_view[1] - self._x_view[0])
+        z_center = self._z_view[1] - ((pos.y() - top) / draw_h) * (self._z_view[1] - self._z_view[0])
+        self._x_view = self._zoom_view(self._x_view, self._x_data_range, x_center, factor)
+        self._z_view = self._zoom_view(self._z_view, self._z_data_range, z_center, factor)
+        self.update()
+        event.accept()
+
+    def _zoom_view(
+        self,
+        view: Tuple[float, float],
+        data: Tuple[float, float],
+        center: float,
+        factor: float,
+    ) -> Tuple[float, float]:
+        span = view[1] - view[0]
+        data_span = data[1] - data[0]
+        if span <= 0 or data_span <= 0:
+            return data
+        new_span = span * factor
+        min_span = data_span * 0.02
+        max_span = data_span
+        new_span = max(min_span, min(max_span, new_span))
+        new_min = center - (center - view[0]) * (new_span / span)
+        new_max = new_min + new_span
+        return self._clamp_view((new_min, new_max), data)
+
+    def _clamp_view(self, view: Tuple[float, float], data: Tuple[float, float]) -> Tuple[float, float]:
+        v0, v1 = view
+        d0, d1 = data
+        span = v1 - v0
+        data_span = d1 - d0
+        if span >= data_span:
+            return data
+        if v0 < d0:
+            v1 += d0 - v0
+            v0 = d0
+        if v1 > d1:
+            v0 -= v1 - d1
+            v1 = d1
+        return (max(d0, v0), min(d1, v1))
 
 
 class MainDialog(QDialog):
@@ -471,6 +631,7 @@ class MainDialog(QDialog):
         gl = QGridLayout(gb)
         self.axis_step = self._spin(5, 0.5, 1000)
         self.section_step = self._spin(20, 1, 1000)
+        self.surface_section_step = self._spin(5, 0.1, 1000)
         self.section_length = self._spin(80, 5, 1000)
         self.section_buffer = self._spin(5, 0.1, 200)
         self.section_sample_step = self._spin(1, 0.1, 10)
@@ -495,26 +656,28 @@ class MainDialog(QDialog):
         gl.addWidget(self.axis_step, 0, 1)
         gl.addWidget(QLabel("Passo sezioni"), 1, 0)
         gl.addWidget(self.section_step, 1, 1)
-        gl.addWidget(QLabel("LUNGHEZZA MAX SEZIONE"), 2, 0)
-        gl.addWidget(self.section_length, 2, 1)
-        gl.addWidget(QLabel("BUFFER LATERALE SEZIONE [m]"), 3, 0)
-        gl.addWidget(self.section_buffer, 3, 1)
-        gl.addWidget(QLabel("Passo campionamento sezione"), 4, 0)
-        gl.addWidget(self.section_sample_step, 4, 1)
-        gl.addWidget(QLabel("Scala profilo orizzontale (1:n)"), 5, 0)
-        gl.addWidget(self.profile_h_scale, 5, 1)
-        gl.addWidget(QLabel("Scala profilo verticale (1:n)"), 6, 0)
-        gl.addWidget(self.profile_v_scale, 6, 1)
-        gl.addWidget(QLabel("Scala sezioni (1:n)"), 7, 0)
-        gl.addWidget(self.section_scale, 7, 1)
-        gl.addWidget(QLabel("Esagerazione verticale sezioni"), 8, 0)
-        gl.addWidget(self.section_vertical_exaggeration, 8, 1)
-        gl.addWidget(QLabel("Passo quotazione sezione [m]"), 9, 0)
-        gl.addWidget(self.section_quote_step, 9, 1)
-        gl.addWidget(QLabel("NUMERO MASSIMO CARTIGLI PER FOGLIO"), 10, 0)
-        gl.addWidget(self.max_cartigli_per_sheet, 10, 1)
-        gl.addWidget(QLabel("Sorgente terreno"), 11, 0)
-        gl.addWidget(self.cmb_terrain_source, 11, 1)
+        gl.addWidget(QLabel("Passo sezioni per road surface [m]"), 2, 0)
+        gl.addWidget(self.surface_section_step, 2, 1)
+        gl.addWidget(QLabel("LUNGHEZZA MAX SEZIONE"), 3, 0)
+        gl.addWidget(self.section_length, 3, 1)
+        gl.addWidget(QLabel("BUFFER LATERALE SEZIONE [m]"), 4, 0)
+        gl.addWidget(self.section_buffer, 4, 1)
+        gl.addWidget(QLabel("Passo campionamento sezione"), 5, 0)
+        gl.addWidget(self.section_sample_step, 5, 1)
+        gl.addWidget(QLabel("Scala profilo orizzontale (1:n)"), 6, 0)
+        gl.addWidget(self.profile_h_scale, 6, 1)
+        gl.addWidget(QLabel("Scala profilo verticale (1:n)"), 7, 0)
+        gl.addWidget(self.profile_v_scale, 7, 1)
+        gl.addWidget(QLabel("Scala sezioni (1:n)"), 8, 0)
+        gl.addWidget(self.section_scale, 8, 1)
+        gl.addWidget(QLabel("Esagerazione verticale sezioni"), 9, 0)
+        gl.addWidget(self.section_vertical_exaggeration, 9, 1)
+        gl.addWidget(QLabel("Passo quotazione sezione [m]"), 10, 0)
+        gl.addWidget(self.section_quote_step, 10, 1)
+        gl.addWidget(QLabel("NUMERO MASSIMO CARTIGLI PER FOGLIO"), 11, 0)
+        gl.addWidget(self.max_cartigli_per_sheet, 11, 1)
+        gl.addWidget(QLabel("Sorgente terreno"), 12, 0)
+        gl.addWidget(self.cmb_terrain_source, 12, 1)
 
         self.tin_group = QGroupBox("Parametri TIN locale")
         tin_gl = QGridLayout(self.tin_group)
@@ -527,7 +690,7 @@ class MainDialog(QDialog):
         tin_gl.addWidget(self.chk_tin_add_contours, 3, 0, 1, 2)
         tin_gl.addWidget(self.chk_tin_add_triangles, 4, 0, 1, 2)
         tin_gl.addWidget(self.chk_tin_cache, 5, 0, 1, 2)
-        gl.addWidget(self.tin_group, 12, 0, 1, 2)
+        gl.addWidget(self.tin_group, 13, 0, 1, 2)
 
         self.cmb_terrain_source.currentIndexChanged.connect(self._toggle_tin_group)
         self._toggle_tin_group()
@@ -653,6 +816,10 @@ class MainDialog(QDialog):
         self.section_step.setToolTip(
             "Distanza tra sezioni consecutive in metri [m]. "
             "Valori minori generano più sezioni."
+        )
+        self.surface_section_step.setToolTip(
+            "Passo dedicato alla discretizzazione della road/project surface [m]. "
+            "Non modifica sezioni, volumi o export sezioni."
         )
         self.section_length.setToolTip(
             "Lunghezza massima della sezione in metri [m]. "

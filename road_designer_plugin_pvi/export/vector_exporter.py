@@ -32,13 +32,15 @@ class VectorExporter:
         output_folder: str,
         project_name: str,
         crs_authid: str,
+        surface_sections: List[SectionData] | None = None,
     ) -> dict:
+        surface_input = surface_sections if surface_sections is not None else sections
         axis_layer = self._build_axis_layer(alignment, crs_authid, f"{project_name}_axis")
         sections_layer = self._build_sections_layer(sections, crs_authid, f"{project_name}_sections")
         slopes_layer = self._build_slopes_layer(sections, crs_authid, f"{project_name}_slopes")
         surface_layer = self._build_project_surface_layer(
             alignment,
-            sections,
+            surface_input,
             crs_authid,
             f"{project_name}_project_surface",
             project_name,
