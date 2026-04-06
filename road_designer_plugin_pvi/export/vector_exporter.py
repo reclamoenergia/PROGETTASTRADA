@@ -37,12 +37,19 @@ class VectorExporter:
         surface_input = surface_sections if surface_sections is not None else sections
         axis_layer = self._build_axis_layer(alignment, crs_authid, f"{project_name}_axis")
         sections_layer = self._build_sections_layer(sections, crs_authid, f"{project_name}_sections")
-        slopes_layer = self._build_slopes_layer(sections, crs_authid, f"{project_name}_slopes")
+        slopes_layer = self._build_slopes_layer(surface_input, crs_authid, f"{project_name}_slopes")
         surface_layer = self._build_project_surface_layer(
             alignment,
             surface_input,
             crs_authid,
             f"{project_name}_project_surface",
+            project_name,
+        )
+        footprint_layer = self._build_footprint_layer(
+            alignment,
+            surface_input,
+            crs_authid,
+            f"{project_name}_project_footprint",
             project_name,
         )
 
@@ -51,6 +58,7 @@ class VectorExporter:
         project.addMapLayer(sections_layer)
         project.addMapLayer(slopes_layer)
         project.addMapLayer(surface_layer)
+        project.addMapLayer(footprint_layer)
 
         saved_paths: List[str] = []
         if output_folder:
@@ -60,6 +68,7 @@ class VectorExporter:
                     self._save_layer(sections_layer, output_folder, f"{project_name}_sections"),
                     self._save_layer(slopes_layer, output_folder, f"{project_name}_slopes"),
                     self._save_layer(surface_layer, output_folder, f"{project_name}_project_surface"),
+                    self._save_layer(footprint_layer, output_folder, f"{project_name}_project_footprint"),
                 ]
             )
 
@@ -68,6 +77,7 @@ class VectorExporter:
             "sections_layer_name": sections_layer.name(),
             "slopes_layer_name": slopes_layer.name(),
             "surface_layer_name": surface_layer.name(),
+            "footprint_layer_name": footprint_layer.name(),
             "saved_paths": [p for p in saved_paths if p],
         }
 
@@ -201,6 +211,70 @@ class VectorExporter:
                     pr.addFeature(feat)
         else:
             note = "Punti insufficienti per costruire la superficie progetto."
+        layer.updateExtents()
+        return layer
+
+    def _build_footprint_layer(
+        self,
+        alignment: Alignment,
+        sections: List[SectionData],
+        crs_authid: str,
+        name: str,
+        project_name: str,
+    ) -> QgsVectorLayer:
+        layer = QgsVectorLayer(f"Polygon?crs={crs_authid}", name, "memory")
+        pr = layer.dataProvider()
+        fields = QgsFields()
+        fields.append(self._field("id", QMetaType.Type.Int))
+        fields.append(self._field("length_m", QMetaType.Type.Double, "double", 18, 3))
+        fields.append(self._field("source_nm", QMetaType.Type.QString, "string", 120))
+        fields.append(self._field("note", QMetaType.Type.QString, "string", 254))
+        pr.addAttributes(fields)
+        layer.updateFields()
+
+        left_pts: List[QgsPointXY] = []
+        right_pts: List[QgsPointXY] = []
+        approx_sections = 0
+        for sec in sections:
+            if not sec.offsets:
+                continue
+            l_off = sec.side_slope_left_outer_offset if sec.side_slope_left_outer_offset is not None else sec.offsets[0]
+            r_off = sec.side_slope_right_outer_offset if sec.side_slope_right_outer_offset is not None else sec.offsets[-1]
+            if r_off <= l_off:
+                continue
+            left_pts.append(self._point_from_offset(sec, l_off))
+            right_pts.append(self._point_from_offset(sec, r_off))
+            if (not sec.side_slope_left_resolved) or (not sec.side_slope_right_resolved):
+                approx_sections += 1
+
+        note = ""
+        if len(left_pts) >= 2 and len(right_pts) >= 2:
+            ring = left_pts + list(reversed(right_pts))
+            if ring and (ring[0] != ring[-1]):
+                ring.append(ring[0])
+            geom = QgsGeometry.fromPolygonXY([ring])
+            if geom.isEmpty():
+                note = "Poligono footprint vuoto."
+            else:
+                if not geom.isGeosValid():
+                    note = "Geometria footprint riparata con makeValid."
+                    geom = geom.makeValid()
+                    if QgsWkbTypes.geometryType(geom.wkbType()) != QgsWkbTypes.PolygonGeometry:
+                        geoms = geom.asGeometryCollection()
+                        polys = [g for g in geoms if QgsWkbTypes.geometryType(g.wkbType()) == QgsWkbTypes.PolygonGeometry]
+                        if polys:
+                            geom = polys[0]
+                        else:
+                            note = "makeValid non ha prodotto un poligono footprint valido."
+                if not geom.isEmpty():
+                    feat = QgsFeature(layer.fields())
+                    if approx_sections > 0:
+                        note = (note + " " if note else "") + f"{approx_sections} sezioni con scarpate approssimate."
+                    feat.setGeometry(geom)
+                    feat.setAttributes([1, alignment.length, project_name, note])
+                    pr.addFeature(feat)
+        else:
+            note = "Punti insufficienti per costruire il footprint dell'opera."
         layer.updateExtents()
         return layer
 

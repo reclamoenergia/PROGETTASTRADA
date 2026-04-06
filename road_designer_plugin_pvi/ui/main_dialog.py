@@ -819,7 +819,8 @@ class MainDialog(QDialog):
         )
         self.surface_section_step.setToolTip(
             "Passo dedicato alla discretizzazione della road/project surface [m]. "
-            "Non modifica sezioni, volumi o export sezioni."
+            "Governa project surface, volumi, scarpate e footprint complessivo dell'opera; "
+            "non modifica il passo delle sezioni DXF."
         )
         self.section_length.setToolTip(
             "Lunghezza massima della sezione in metri [m]. "

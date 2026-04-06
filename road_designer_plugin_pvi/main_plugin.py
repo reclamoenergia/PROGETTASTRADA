@@ -566,8 +566,20 @@ class RoadDesignerPlugin:
             self.active_profile = profile
             d.progress.setValue(45)
 
-            sections, vol, summary = self._compute_earthworks_for_profile(align, terrain, polygon, profile)
-            d.append_log(f"Sezioni generate: {len(sections)}")
+            sections, _vol_sections, _summary_sections = self._compute_earthworks_for_profile(align, terrain, polygon, profile)
+            d.append_log(f"Sezioni analisi/DXF generate: {len(sections)}")
+            surface_step = self._surface_section_step()
+            surface_sections, vol, summary = self._compute_earthworks_for_profile(
+                align,
+                terrain,
+                polygon,
+                profile,
+                section_step=surface_step,
+            )
+            d.append_log(
+                "Sezioni road surface (volumi/slopes/project surface): "
+                f"{len(surface_sections)} | passo={surface_step:.3f} m"
+            )
             d.progress.setValue(70)
             d.append_log(
                 f"Volumi terreno@base: Sterro={vol.total_cut:.2f} m3, "
@@ -583,7 +595,7 @@ class RoadDesignerPlugin:
                 d.append_log(f"WARNING: {w}")
             d.progress.setValue(80)
 
-            self._run_exports(align, axis, profile, sections, vol, terrain, polygon)
+            self._run_exports(align, axis, profile, sections, surface_sections, vol)
             d.progress.setValue(100)
             self._info("Calcolo completato con successo")
         except Exception as exc:
@@ -621,7 +633,7 @@ class RoadDesignerPlugin:
         )
         return TinTerrainProvider(tin_result.surface)
 
-    def _run_exports(self, align, axis_layer, profile, sections, vol, terrain=None, polygon=None):
+    def _run_exports(self, align, axis_layer, profile, sections, surface_sections, vol):
         d = self.dialog
         if not d:
             return
@@ -630,35 +642,6 @@ class RoadDesignerPlugin:
             d.append_log("WARNING: Cartella output non impostata: i layer vettoriali saranno creati solo in memoria.")
         name = d.project_name.text().strip() or "road_project"
         crs_authid = axis_layer.crs().authid() if axis_layer and axis_layer.crs().isValid() else QgsProject.instance().crs().authid()
-        surface_step = max(0.01, float(d.surface_section_step.value() or 0.0))
-        if surface_step <= 0:
-            surface_step = float(d.section_step.value())
-        surface_sections = sections
-        if abs(surface_step - float(d.section_step.value())) > 1.0e-9:
-            try:
-                terrain_for_surface = terrain
-                if terrain_for_surface is None:
-                    dtm_layer = self._layer(d.cmb_dtm.currentText())
-                    terrain_for_surface = self._build_terrain_provider(dtm_layer, align.points)
-                polygon_for_surface = polygon if polygon is not None else self._layer(d.cmb_polygon.currentText())
-                surface_sections, _sv, _ss = self._compute_earthworks_for_profile(
-                    align,
-                    terrain_for_surface,
-                    polygon_for_surface,
-                    profile,
-                    section_step=surface_step,
-                )
-                d.append_log(
-                    "Road surface discreta con passo dedicato: "
-                    f"{surface_step:.3f} m (sezioni surface={len(surface_sections)})."
-                )
-            except Exception as exc:
-                d.append_log(
-                    "WARNING: impossibile usare passo road surface dedicato; "
-                    f"fallback a passo sezioni standard ({d.section_step.value():.3f} m): {exc}"
-                )
-                surface_sections = sections
-
         def _vector_export():
             vec_result = VectorExporter().export_outputs(
                 align,
@@ -671,7 +654,8 @@ class RoadDesignerPlugin:
             d.append_log(
                 "Layer QGIS creati: "
                 f"{vec_result['axis_layer_name']}, {vec_result['sections_layer_name']}, "
-                f"{vec_result['slopes_layer_name']}, {vec_result['surface_layer_name']}"
+                f"{vec_result['slopes_layer_name']}, {vec_result['surface_layer_name']}, "
+                f"{vec_result['footprint_layer_name']}"
             )
             for path in vec_result["saved_paths"]:
                 d.append_log(f"Vettoriale salvato: {path}")
@@ -867,7 +851,13 @@ class RoadDesignerPlugin:
                 return
             terrain = self._build_terrain_provider(dtm, align.points)
             profile = self._build_active_profile_for_alignment(align, terrain)
-            _sections, _vol, summary = self._compute_earthworks_for_profile(align, terrain, polygon, profile)
+            _sections, _vol, summary = self._compute_earthworks_for_profile(
+                align,
+                terrain,
+                polygon,
+                profile,
+                section_step=self._surface_section_step(),
+            )
             d.set_earthworks_summary(self._format_summary(summary))
             d.append_log("Anteprima movimenti terra aggiornata (nessun export).")
         except Exception as exc:
@@ -894,6 +884,15 @@ class RoadDesignerPlugin:
             align.points,
         )
 
+    def _surface_section_step(self) -> float:
+        d = self.dialog
+        if not d:
+            return 1.0
+        surface_step = float(d.surface_section_step.value() or 0.0)
+        if surface_step > 0:
+            return surface_step
+        return max(0.01, float(d.section_step.value() or 1.0))
+
     def suggest_minimum_earthworks_profile(self):
         d = self.dialog
         if not d:
@@ -917,7 +916,13 @@ class RoadDesignerPlugin:
             terrain = self._build_terrain_provider(dtm, align.points)
             terrain_axis = terrain.sample_many(align.points)
             current_profile = self.vp_builder.build_from_pvi(align.progressive, terrain_axis, self.pvi_rows, d.default_curve_length.value())
-            _s0, _v0, current_summary = self._compute_earthworks_for_profile(align, terrain, polygon, current_profile)
+            _s0, _v0, current_summary = self._compute_earthworks_for_profile(
+                align,
+                terrain,
+                polygon,
+                current_profile,
+                section_step=self._surface_section_step(),
+            )
             best_rows, best_summary = self._run_two_stage_optimizer(align, terrain_axis, terrain, polygon, unlocked)
             self.suggested_pvi_rows = best_rows
             self.suggested_profile = self.vp_builder.build_from_pvi(align.progressive, terrain_axis, best_rows, d.default_curve_length.value())
@@ -1185,7 +1190,13 @@ class RoadDesignerPlugin:
     def _evaluate_candidate(self, candidate_rows, align, terrain_axis, terrain, polygon) -> Tuple[float, Dict[str, float]]:
         d = self.dialog
         profile = self.vp_builder.build_from_pvi(align.progressive, terrain_axis, candidate_rows, d.default_curve_length.value())
-        _sections, _vol, summary = self._compute_earthworks_for_profile(align, terrain, polygon, profile)
+        _sections, _vol, summary = self._compute_earthworks_for_profile(
+            align,
+            terrain,
+            polygon,
+            profile,
+            section_step=self._surface_section_step(),
+        )
         return self._score_candidate(candidate_rows, summary), summary
 
     def _format_comparison_summary(self, current: Dict[str, float], suggested: Dict[str, float]) -> str:
