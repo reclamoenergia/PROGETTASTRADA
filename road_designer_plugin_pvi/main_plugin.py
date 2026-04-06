@@ -569,17 +569,25 @@ class RoadDesignerPlugin:
             sections, _vol_sections, _summary_sections = self._compute_earthworks_for_profile(align, terrain, polygon, profile)
             d.append_log(f"Sezioni analisi/DXF generate: {len(sections)}")
             surface_step = self._surface_section_step()
-            surface_sections, vol, summary = self._compute_earthworks_for_profile(
-                align,
-                terrain,
-                polygon,
-                profile,
-                section_step=surface_step,
-            )
-            d.append_log(
-                "Sezioni road surface (volumi/slopes/project surface): "
-                f"{len(surface_sections)} | passo={surface_step:.3f} m"
-            )
+            base_step = max(0.01, float(d.section_step.value() or 1.0))
+            if abs(surface_step - base_step) <= 1e-9:
+                surface_sections, vol, summary = sections, _vol_sections, _summary_sections
+                d.append_log(
+                    "Sezioni road surface (volumi/slopes/project surface): "
+                    f"{len(surface_sections)} | passo={surface_step:.3f} m (riuso sezioni analisi)"
+                )
+            else:
+                surface_sections, vol, summary = self._compute_earthworks_for_profile(
+                    align,
+                    terrain,
+                    polygon,
+                    profile,
+                    section_step=surface_step,
+                )
+                d.append_log(
+                    "Sezioni road surface (volumi/slopes/project surface): "
+                    f"{len(surface_sections)} | passo={surface_step:.3f} m"
+                )
             d.progress.setValue(70)
             d.append_log(
                 f"Volumi terreno@base: Sterro={vol.total_cut:.2f} m3, "

@@ -21,6 +21,20 @@ from ..core.models import SectionData
 
 
 class VectorExporter:
+
+    def _keep_polygon_components(self, geom: QgsGeometry) -> QgsGeometry:
+        geom_type = QgsWkbTypes.geometryType(geom.wkbType())
+        if geom_type == QgsWkbTypes.PolygonGeometry:
+            return geom
+
+        geoms = geom.asGeometryCollection()
+        polys = [g for g in geoms if QgsWkbTypes.geometryType(g.wkbType()) == QgsWkbTypes.PolygonGeometry]
+        if not polys:
+            return QgsGeometry()
+        if len(polys) == 1:
+            return polys[0]
+        return QgsGeometry.collectGeometry(polys)
+
     def _field(self, name: str, field_type, type_name: str = "", length: int = 0, precision: int = 0) -> QgsField:
         # QGIS >= 3.40: prefer QMetaType-based constructor to avoid QVariant deprecation warnings.
         return QgsField(name=name, type=field_type, typeName=type_name, len=length, prec=precision)
@@ -194,14 +208,9 @@ class VectorExporter:
             else:
                 if not geom.isGeosValid():
                     note = "Geometria superficie riparata con makeValid."
-                    geom = geom.makeValid()
-                    if geom.wkbType() in (QgsWkbTypes.GeometryCollection, QgsWkbTypes.Unknown):
-                        geoms = geom.asGeometryCollection()
-                        polys = [g for g in geoms if QgsWkbTypes.geometryType(g.wkbType()) == QgsWkbTypes.PolygonGeometry]
-                        if polys:
-                            geom = polys[0]
-                        else:
-                            note = "makeValid non ha prodotto un poligono valido."
+                    geom = self._keep_polygon_components(geom.makeValid())
+                    if geom.isEmpty():
+                        note = "makeValid non ha prodotto un poligono valido."
                 if not geom.isEmpty():
                     feat = QgsFeature(layer.fields())
                     if approx_sections > 0:
@@ -258,14 +267,9 @@ class VectorExporter:
             else:
                 if not geom.isGeosValid():
                     note = "Geometria footprint riparata con makeValid."
-                    geom = geom.makeValid()
-                    if QgsWkbTypes.geometryType(geom.wkbType()) != QgsWkbTypes.PolygonGeometry:
-                        geoms = geom.asGeometryCollection()
-                        polys = [g for g in geoms if QgsWkbTypes.geometryType(g.wkbType()) == QgsWkbTypes.PolygonGeometry]
-                        if polys:
-                            geom = polys[0]
-                        else:
-                            note = "makeValid non ha prodotto un poligono footprint valido."
+                    geom = self._keep_polygon_components(geom.makeValid())
+                    if geom.isEmpty():
+                        note = "makeValid non ha prodotto un poligono footprint valido."
                 if not geom.isEmpty():
                     feat = QgsFeature(layer.fields())
                     if approx_sections > 0:
