@@ -274,7 +274,7 @@ class DxfExporter:
                 dxfattribs={"height": 3.2, "layer": "PROF_TEXT"},
             ).set_placement((graph_left, usable_top - 43.0))
 
-            gx_span = max(1e-6, e_prog - s_prog)
+            horizontal_mm_per_m = 1000.0 / max(1.0, profile_h_scale)
             vertical_mm_per_m = 1000.0 / max(1.0, profile_v_scale)
             local_terr = [z for p, z in zip(profile.progressive, profile.terrain_z) if s_prog <= p <= e_prog and math.isfinite(z)]
             local_proj = [z for p, z in zip(profile.progressive, profile.project_z) if s_prog <= p <= e_prog and math.isfinite(z)]
@@ -285,21 +285,24 @@ class DxfExporter:
             else:
                 z_min_local = min_z
                 z_max_local = min_z + 1.0
-            z_span_local = max(0.5, z_max_local - z_min_local)
-            target_span_m = max(0.5, (graph_top - graph_bottom) / max(1e-6, vertical_mm_per_m))
-            if z_span_local < target_span_m:
-                extra = (target_span_m - z_span_local) * 0.5
-                z_min_map = z_min_local - extra
-                z_max_map = z_max_local + extra
-            else:
-                margin = z_span_local * 0.05
-                z_min_map = z_min_local - margin
-                z_max_map = z_max_local + margin
-            z_map_span = max(1e-6, z_max_map - z_min_map)
+            # Trasformazione metrica reale: nessun fit verticale al box.
+            # z_ref serve solo come traslazione; la scala V resta fissa (1:profile_v_scale).
+            vertical_capacity_m = (graph_top - graph_bottom) / max(1e-9, vertical_mm_per_m)
+            z_ref = math.floor(z_min_local * 2.0) / 2.0
+            if z_max_local - z_ref > vertical_capacity_m:
+                z_ref = z_max_local - vertical_capacity_m
 
             def map_point(p: float, z: float) -> tuple[float, float]:
-                x = graph_left + (p - s_prog) / gx_span * (graph_right - graph_left)
-                y = graph_bottom + (z - z_min_map) / z_map_span * (graph_top - graph_bottom)
+                x, y = self._map_profile_point_to_sheet(
+                    progressive=p,
+                    elevation=z,
+                    sheet_prog_start=s_prog,
+                    z_ref=z_ref,
+                    graph_left=graph_left,
+                    graph_bottom=graph_bottom,
+                    h_mm_per_m=horizontal_mm_per_m,
+                    v_mm_per_m=vertical_mm_per_m,
+                )
                 return x, max(graph_bottom, min(graph_top, y))
 
             terr_pts = [map_point(p, z) for p, z in zip(profile.progressive, profile.terrain_z) if s_prog <= p <= e_prog]
@@ -335,6 +338,21 @@ class DxfExporter:
 
             self._draw_profile_table(msp, marks, graph_left, graph_right, table_top, usable_bottom + 20.0)
         return sheet_count
+
+    def _map_profile_point_to_sheet(
+        self,
+        progressive: float,
+        elevation: float,
+        sheet_prog_start: float,
+        z_ref: float,
+        graph_left: float,
+        graph_bottom: float,
+        h_mm_per_m: float,
+        v_mm_per_m: float,
+    ) -> tuple[float, float]:
+        x = graph_left + (progressive - sheet_prog_start) * h_mm_per_m
+        y = graph_bottom + (elevation - z_ref) * v_mm_per_m
+        return x, y
 
     def _draw_profile_table(self, msp, marks: List[dict], left: float, right: float, top: float, bottom: float) -> None:
         rows = ["SEZIONE", "PROGRESSIVA", "QUOTA TERRENO", "QUOTA PROGETTO"]
