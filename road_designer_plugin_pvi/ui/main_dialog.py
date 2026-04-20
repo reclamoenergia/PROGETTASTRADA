@@ -22,6 +22,7 @@ from qgis.PyQt.QtWidgets import (
     QScrollArea,
     QSizePolicy,
     QSpinBox,
+    QSplitter,
     QTableWidget,
     QTableWidgetItem,
     QToolTip,
@@ -494,8 +495,16 @@ class MainDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Road Designer Plugin PVI")
-        self.resize(920, 840)
+        self.resize(1360, 860)
         root = QVBoxLayout(self)
+
+        splitter = QSplitter(Qt.Horizontal)
+        splitter.setChildrenCollapsible(False)
+
+        left_panel = QWidget()
+        left_layout = QVBoxLayout(left_panel)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
         scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -505,18 +514,34 @@ class MainDialog(QDialog):
         form_layout.addWidget(self._build_input_group())
         form_layout.addWidget(self._build_geom_group())
         form_layout.addWidget(self._build_sampling_group())
-        form_layout.addWidget(self._build_vertical_profile_group())
         form_layout.addWidget(self._build_output_group())
         form_layout.addWidget(self._build_json_group())
+        form_layout.addWidget(self._build_commands_group())
         form_layout.addStretch(1)
         scroll_area.setWidget(form_container)
-        root.addWidget(scroll_area, 1)
-        root.addWidget(self._build_actions_group())
+        left_layout.addWidget(scroll_area)
+
+        right_panel = QWidget()
+        right_layout = QVBoxLayout(right_panel)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.addWidget(self._build_vertical_profile_group(), 4)
+        right_layout.addWidget(self._build_results_group(), 2)
+
+        left_panel.setMinimumWidth(380)
+        left_panel.setMaximumWidth(520)
+        splitter.addWidget(left_panel)
+        splitter.addWidget(right_panel)
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+        splitter.setSizes([420, 940])
+
+        root.addWidget(splitter, 1)
         self._set_parameter_tooltips()
 
     def _build_input_group(self):
         gb = QGroupBox("INPUT")
         gl = QGridLayout(gb)
+        gl.setColumnStretch(1, 1)
         self.cmb_dtm = QComboBox()
         self.cmb_axis = QComboBox()
         self.cmb_polygon = QComboBox()
@@ -544,6 +569,7 @@ class MainDialog(QDialog):
         vl = QVBoxLayout(gb)
 
         top = QGridLayout()
+        top.setColumnStretch(1, 1)
         self.cmb_profile_mode = QComboBox()
         self.cmb_profile_mode.addItem("Automatico (attuale)", "automatic")
         self.cmb_profile_mode.addItem("Profilo da PVI geometrici", "pvi")
@@ -597,6 +623,7 @@ class MainDialog(QDialog):
     def _build_geom_group(self):
         gb = QGroupBox("PARAMETRI GEOMETRICI")
         gl = QGridLayout(gb)
+        gl.setColumnStretch(1, 1)
         self.min_width = self._spin(5, 1, 200)
         self.crossfall_nominal = self._spin(3, 0, 30)
         self.crossfall_min = self._spin(2, 0, 30)
@@ -629,6 +656,7 @@ class MainDialog(QDialog):
     def _build_sampling_group(self):
         gb = QGroupBox("CAMPIONAMENTO")
         gl = QGridLayout(gb)
+        gl.setColumnStretch(1, 1)
         self.axis_step = self._spin(5, 0.5, 1000)
         self.section_step = self._spin(20, 1, 1000)
         self.surface_section_step = self._spin(5, 0.1, 1000)
@@ -699,6 +727,7 @@ class MainDialog(QDialog):
     def _build_output_group(self):
         gb = QGroupBox("OUTPUT")
         gl = QGridLayout(gb)
+        gl.setColumnStretch(1, 1)
         self.output_folder = QLineEdit()
         self.project_name = QLineEdit("road_project")
         self.btn_browse = QPushButton("Sfoglia...")
@@ -728,23 +757,30 @@ class MainDialog(QDialog):
         hl.addWidget(self.btn_save_json)
         return gb
 
-    def _build_actions_group(self):
-        gb = QGroupBox("AZIONI")
+    def _build_commands_group(self):
+        gb = QGroupBox("COMANDI")
         vl = QVBoxLayout(gb)
-        self.btn_calculate = QPushButton("Calcola")
+        self.btn_calculate = QPushButton("Calcola / Aggiorna")
         self.btn_preview_earthworks = QPushButton("Anteprima movimenti terra")
         self.btn_suggest_profile = QPushButton("Suggerisci profilo a minimo movimento terra")
         self.btn_apply_suggested = QPushButton("Applica profilo suggerito")
+        vl.addWidget(self.btn_calculate)
+        vl.addWidget(self.btn_preview_earthworks)
+        vl.addWidget(self.btn_suggest_profile)
+        vl.addWidget(self.btn_apply_suggested)
+        return gb
+
+    def _build_results_group(self):
+        gb = QGroupBox("RISULTATI E LOG")
+        vl = QVBoxLayout(gb)
         self.txt_earthworks_summary = QPlainTextEdit()
         self.txt_earthworks_summary.setReadOnly(True)
         self.txt_earthworks_summary.setPlaceholderText("Riepilogo volumi attuale/suggerito")
         self.progress = QProgressBar()
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
-        vl.addWidget(self.btn_calculate)
-        vl.addWidget(self.btn_preview_earthworks)
-        vl.addWidget(self.btn_suggest_profile)
-        vl.addWidget(self.btn_apply_suggested)
+        self.log.setPlaceholderText("Log elaborazione")
+        self.log.setMinimumHeight(140)
         vl.addWidget(self.txt_earthworks_summary)
         vl.addWidget(self.progress)
         vl.addWidget(self.log)
