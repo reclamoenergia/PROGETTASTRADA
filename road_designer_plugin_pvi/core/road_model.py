@@ -21,6 +21,9 @@ class RoadModelBuilder:
         cf = crossfall_pct / 100.0
         pad_s = pad_slope_pct / 100.0
         w: WidthInfo = section.width_info or WidthInfo(half_core, half_core, min_platform_width)
+        # Vincolo geometrico: i bordi reali della piattaforma devono essere vertici espliciti
+        # della sezione per evitare raccordi spurii con la scarpata in export/plot.
+        self._ensure_section_offsets(section, [-w.left_width, w.right_width])
         project_z: List[float] = []
         core_z: List[float] = []
         for idx, off in enumerate(section.offsets):
@@ -55,6 +58,8 @@ class RoadModelBuilder:
         if not section.project_z or not section.terrain_z:
             return section
         w: WidthInfo = section.width_info or WidthInfo(0.0, 0.0, 0.0)
+        # Garantisce coerenza geometrica al punto di transizione piattaforma -> scarpata.
+        self._ensure_section_offsets(section, [-w.left_width, w.right_width])
         # Reset esplicito: i segmenti esistono solo se la risoluzione corrente trova un intercetto valido.
         section.left_slope_segment = None
         section.right_slope_segment = None
@@ -77,11 +82,48 @@ class RoadModelBuilder:
         section.side_slope_right_note = right_note
         section.left_slope_segment = left_segment
         section.right_slope_segment = right_segment
+        # Se disponibile, aggiunge anche l'intercetto della scarpata con il terreno.
+        # In questo modo il cambio pendenza è ancorato su un vertice reale.
+        self._ensure_section_offsets(
+            section,
+            [
+                left_outer if left_ok else None,
+                right_outer if right_ok else None,
+            ],
+        )
         if not section.side_slope_left_resolved:
             section.warnings.append("Scarpata sinistra approssimata: intercettazione terreno non trovata.")
         if not section.side_slope_right_resolved:
             section.warnings.append("Scarpata destra approssimata: intercettazione terreno non trovata.")
         return section
+
+    def _ensure_section_offsets(self, section: SectionData, extra_offsets: List[float | None]) -> None:
+        if not section.offsets:
+            return
+        valid = [float(o) for o in extra_offsets if o is not None and math.isfinite(float(o))]
+        if not valid:
+            return
+
+        old_offsets = list(section.offsets)
+        old_terrain = list(section.terrain_z)
+        old_project = list(section.project_z)
+        old_core = list(section.road_core_z)
+        if len(old_offsets) < 2:
+            return
+
+        min_x, max_x = old_offsets[0], old_offsets[-1]
+        merged = [round(float(o), 6) for o in old_offsets]
+        merged.extend(round(max(min(float(o), max_x), min_x), 6) for o in valid)
+        new_offsets = sorted(set(merged))
+        if len(new_offsets) == len(old_offsets) and all(abs(a - b) <= 1e-9 for a, b in zip(new_offsets, old_offsets)):
+            return
+
+        section.offsets = new_offsets
+        section.terrain_z = [self._interp_piecewise(old_offsets, old_terrain, off) for off in new_offsets]
+        if old_project:
+            section.project_z = [self._interp_piecewise(old_offsets, old_project, off) for off in new_offsets]
+        if old_core:
+            section.road_core_z = [self._interp_piecewise(old_offsets, old_core, off) for off in new_offsets]
 
     def apply_effective_section_window(self, section: SectionData, max_section_width: float, section_buffer: float) -> SectionData:
         if not section.offsets or len(section.offsets) < 2:
