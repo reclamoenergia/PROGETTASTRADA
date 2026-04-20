@@ -46,6 +46,10 @@ class SectionData:
     side_slope_right_outer_offset: Optional[float] = None
     side_slope_left_note: str = ""
     side_slope_right_note: str = ""
+    # Segmenti geometrici espliciti delle scarpate (bordo piattaforma -> intercetto terreno).
+    # Valorizzati solo quando l'intercettazione è risolta in modo valido.
+    left_slope_segment: Optional[Tuple[Tuple[float, float], Tuple[float, float]]] = None
+    right_slope_segment: Optional[Tuple[Tuple[float, float], Tuple[float, float]]] = None
     max_section_width: float = 0.0
     section_buffer: float = 0.0
     effective_left_offset: Optional[float] = None

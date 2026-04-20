@@ -880,8 +880,8 @@ class DxfExporter:
             section=sec,
             step=current_step,
         )
-        ls = self._build_slope_polyline(sec, left=True)
-        rs = self._build_slope_polyline(sec, left=False)
+        ls = self._get_slope_segment_points(sec, left=True)
+        rs = self._get_slope_segment_points(sec, left=False)
         self._safe_add_polyline(
             msp,
             [map_pt(o, z) for o, z in ls],
@@ -1248,36 +1248,21 @@ class DxfExporter:
             return []
         return [(edge_off, edge_z), (outer_off, outer_z)]
 
-    def _build_slope_polyline(self, section: SectionData, left: bool) -> list[tuple[float, float]]:
-        if not section.offsets or not section.project_z or section.width_info is None:
-            return []
-        edge_off = -section.width_info.left_width if left else section.width_info.right_width
-        outer_off = section.side_slope_left_outer_offset if left else section.side_slope_right_outer_offset
-        if outer_off is None:
-            outer_off = section.left_slope_hit_offset if left else section.right_slope_hit_offset
-        if outer_off is None:
-            return self._build_slope_segment(section, left)
-        if left and outer_off > edge_off:
-            return self._build_slope_segment(section, left)
-        if (not left) and outer_off < edge_off:
-            return self._build_slope_segment(section, left)
-        lo = min(edge_off, outer_off)
-        hi = max(edge_off, outer_off)
-        points = [
-            (off, z)
-            for off, z in zip(section.offsets, section.project_z)
-            if math.isfinite(off) and math.isfinite(z) and lo <= off <= hi
-        ]
-        edge_z = self._interp_piecewise(section.offsets, section.project_z, edge_off)
-        outer_z = self._interp_piecewise(section.offsets, section.project_z, outer_off)
-        if not (math.isfinite(edge_z) and math.isfinite(outer_z)):
-            return self._build_slope_segment(section, left)
-        points.append((edge_off, edge_z))
-        points.append((outer_off, outer_z))
-        clean = self._sanitize_offset_points(points, section, f"slope_{'left' if left else 'right'}")
-        if left:
-            clean.sort(key=lambda p: p[0], reverse=True)
-        return clean if len(clean) >= 2 else self._build_slope_segment(section, left)
+    def _get_slope_segment_points(self, section: SectionData, left: bool) -> list[tuple[float, float]]:
+        """
+        Restituisce i 2 vertici geometrici della scarpata:
+        - start: bordo piattaforma
+        - end: intercetto terreno
+
+        Il model è la fonte primaria (left_slope_segment/right_slope_segment).
+        Fallback legacy mantenuto per retrocompatibilità su dati preesistenti.
+        """
+        raw_segment = section.left_slope_segment if left else section.right_slope_segment
+        if raw_segment and len(raw_segment) == 2:
+            start, end = raw_segment
+            if self._is_valid_point(start) and self._is_valid_point(end):
+                return [start, end]
+        return self._build_slope_segment(section, left)
 
     def _build_pad_polyline(self, section: SectionData) -> list[tuple[float, float]]:
         if not section.offsets or not section.project_z or section.width_info is None:
